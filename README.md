@@ -2,74 +2,81 @@
 
 *Crystal + Mythic = Celebi*
 
-A WIP Mythic agent for x64 Windows that uses Crystal Palace to build its payloads.
+A Mythic agent for x64 Windows that uses [Crystal Palace](https://tradecraftgarden.org/crystalpalace.html) to build its payloads as position-independent shellcode.
 
-To be clear, this agent is an unfinished WIP, and it is also not opsec safe. Please don't try to use it in a real red team engagement.
+---
 
-Current features:
+## Credits
 
-- Performs a plaintext checkin with the specified C2 server via HTTP(S).
-- Supports the `callback_host` and `callback_port` parameters to specify the C2 listener.
-- Supports the `post_uri` parameter to specify the URI for checking in.
-- Supports the `exit` and `whoami` built-in commands.
-- Supports a `register` and `unregister` command to upload or delete files from the agent's memory vault.
-- Supports an `execute_pico` command to interpret a registered file as a Crystal Palace PICO and run it.
-- Supports a `morph` command to hotswap the PICO used by a built-in command, replacing it with a registered file.
-- Performs basic XOR-based sleepmasking of the memory vault, implemented as a PICO so you can swap it out if desired.
-- Does not perform sleepmasking of the executable PIC, but offers a PICO hook so you can swap in your own implementation if desired.
+**Celebi was originally written by [@ofasgard (Callum Murphy-Hale)](https://github.com/ofasgard).**
 
-Current limitations:
+The original author's work builds on the efforts of:
 
-- Only implements basic functionality
-- Only supports x64 architectures
-- Only communicates using plaintext (no AES256)
-- Only supports the http C2 profile
-- Ignores most C2 profile parameters
-- Fairly opsec unsafe, some basic (but limited) obfuscation measures are implemented
-- Very little error handling, will probably crash if something unexpected happens
-- The `register` command uses a very simple/naive "memory vault" implementation that endlessly grows as you register more files.
-- Likewise, the `unregister` command literally just zeroes out the file and replaces its name with a dummy string.
+- [Raphael Mudge](https://tradecraftgarden.org/crystalpalace.html) — Crystal Palace and LibTCG.
+- [@pard0p](https://github.com/pard0p/LibWinHttp) — the LibWinHttp library used for HTTP messaging.
+- [Cody Thomas](https://github.com/its-a-feature) — Mythic, and its excellent documentation.
+- [Leonardo Tamiano](https://blog.leonardotamiano.xyz/tech/base64/) — a self-contained base64 implementation that plays nicely with PIC.
+- [TrustedSec](https://github.com/trustedsec/CS-Situational-Awareness-BOF) — open-source BOFs ported into PICOs for some of Celebi's built-in commands.
 
-Longterm goals:
+This repository is a port and extension of the original project. **Most of the new code was written by an AI agent under direct human supervision**; the original author's design and code are preserved and remain the foundation of the project.
 
-- Fully implement parameters from the http C2 profile
-- Implement AES256 traffic encryption
-- Port over more of TrustedSec's situational awareness BOFs (GPL) and use them to provide some built-in PICO commands to the agent.
-- Implement `execute_bof` and `execute_shellcode` commands as a supplement to the `execute_pico` command.
-- Support other C2 profiles
-- Include YARA rules for the "default" build of the agent
+---
+
+## Disclaimer
 
 > This project is released strictly for educational purposes, and is intended solely for use by authorised parties performing legitimate security research and red team assessments. My only intention is to share my work for the purposes of uplifting security.
 
+This agent is a work in progress and is **not opsec safe**. Please don't use it in a real red team engagement.
+
+---
+
+## Original features
+
+- Performs a plaintext checkin with the specified C2 server via HTTP(S).
+- Supports the `callback_host` and `callback_port` parameters to specify the C2 listener, and the `post_uri` parameter to specify the URI for checking in.
+- Built-in commands: `exit`, `whoami`, `sleep`, `register`, `unregister`, `execute_pico`, `morph`.
+- `register`/`unregister` upload or delete files from the agent's in-memory vault; `execute_pico` interprets a registered file as a Crystal Palace PICO and runs it; `morph` hotswaps the PICO behind a built-in command.
+- XOR-based sleepmasking of the memory vault, implemented as a PICO so it can be swapped out; a PICO hook is also provided for sleepmasking the executable PIC itself.
+- Built-in PICOs: `checkin` (situational awareness), `whoami` (ported from TrustedSec's BOF), `mask_vault` / `mask_sleep` (sleepmasking).
+- The agent is designed around dynamically loaded capabilities: upload new PICO functionality with `register` and swap built-ins with `morph` — no recompiling the shellcode.
+
+## Added features (Mythic v4 port, 2026)
+
+- **Mythic v4 compatibility** — updated container libraries and translation-container wire format; `mythic_encrypts=False` with an **AES256-HMAC** envelope (`aes256_hmac`).
+- **RSA Encrypted Key Exchange (EKE)** — optional `encrypted_exchange_check` staging via `staging_rsa` (bcrypt RSA-4096, OAEP-SHA1) with per-session keys.
+- **Full http C2 profile support** — callback host/port, HTTPS toggle, post/get URIs, query parameter name, callback interval, jitter, killdate, headers, proxy.
+- **P2P (smb/tcp C2 profiles)** — `link` / `unlink` commands. P2P children bind a named pipe (`smb`) or TCP listener (`tcp`) and check in through the relaying agent; **multi-link chaining** lets agents pivot deeper (`parent -> smb -> tcp -> ...`) with Mythic delegate traffic and automatic callback-graph edges.
+- **`spawn` / `spawnto`** — build a new payload on demand (http/smb/tcp) via Mythic RPC, download it through the agent's own channel (works over http *and* through the p2p relay) and inject it into a sacrificial process. Spawned tcp children use a random high port (45621–59832); the parent verifies the port is free before injecting.
+- **Checkin IP reporting** — the agent reports its host's local IPv4 at checkin.
+
+New commands: `link`, `unlink`, `spawn`, `spawnto` — alongside the original `exit`, `whoami`, `sleep`, `register`, `unregister`, `execute_pico`, `morph`.
+
 ## Installation
 
+### Via mythic-cli
+
+```console
+$ ./mythic-cli install github https://github.com/garlic-wizard/celebi
+```
+
+This installs the `celebi` payload type and the `celebi_translator` translation container. Build payloads with the http, smb or tcp C2 profiles, `AESPSK` set to `aes256_hmac`, and `encrypted_exchange_check` enabled for the p2p profiles.
+
+### Manually
+
 1. Clone the repository and copy both `celebi` and `celebi_translator` to your `Mythic/InstalledServices` folder.
-2. Add them both to your docker-compose file: `mythic-cli add celebi` and `mythic-cli add celebi_translator`.
-3. Build both containers: `mythic-cli build celebi` and `mythic-cli build celebi_translator`.
-4. Build payloads for Celebi using the http C2 profile. You can use HTTP or HTTPS, but make sure that `AESPSK` is set to "none". 
+2. `mythic-cli add celebi` and `mythic-cli add celebi_translator`.
+3. `mythic-cli build celebi` and `mythic-cli build celebi_translator`.
+4. Build payloads using the http, smb or tcp C2 profile.
 
 ## Design
 
-*Note that the design described here represents my aspirations for Celebi rather than its current state.*
+The overall design goal of Celebi is to hardcode as little functionality as possible: basic functionality such as sleep masking, information gathering, and command execution live in a set of PICOs linked into the final implant. The PICOs that ship with Celebi "just work" without being opsec safe, but they can be replaced with your own Crystal Palace PICOs implementing the same interfaces.
 
-The overall design goal of Celebi is to hardcode as little functionality as possible. Instead, we implement basic functionality such as sleep masking, information gathering, or command execution into a set of PICOs that are linked into the final implant. The PICOs that ship with Celebi by default are intended to "just work" without being opsec safe, but they can be replaced with your own custom Crystal Palace PICOs that implement the same interface.
-
-The list of built-in PICOs currently includes:
-
-- `checkin.c`: Performs basic information gathering about the target system and uses the collected data to enrich a `CheckinRequest` struct.
-- `mask_vault.c`: One half of celebi's sleep masking functionality. Performs XOR-based obfuscation of the memory vault used to store PICOs in memory.
-- `mask_sleep.c`: The other half of celebi's sleep masking functionality. Does nothing but invoke `WaitForSingleObject()`, but you can swap it out for a custom sleepmasking implementation.
-- `whoami.c`: A port of the whoami BOF from TrustedSec's CS-Situational-Awareness-BOF repository. Used by the `whoami` built-in command.
-
-In addition, the design calls for the ability to change every aspect of the implant while it is running. You can upload new PICO capabilities with the `register` command, and you can replace built-in functionality with the `morph` command. 
-
-For example, if you register a PICO named `custom_whoami` with the agent, you can replace the built-in `whoami` command with it by running `morph whoami custom_whoami`. This will also unregister the old PICO and clear it from memory. This allows your agent to dynamically change its TTPs and behaviour without recompiling the underlying shellcode.
-
-I don't intend to write a large number of commands for this agent. Beyond basic convenience commands like `whoami` or `download`, the plan is for most of the agent's capabilities to be loaded *after* it starts running, in the form of BOFs or PICOs. I plan to provide support for both. Likewise, I don't plan to implement many (or maybe any) of Mythic's "optional" commands, because most of the implant's capabilities are intended to be loaded in remotely with `register` and `execute_pico`.
+The extension work keeps that philosophy: the new p2p and spawn capabilities are implemented as plain commands plus a small wire-format extension, with no changes to the PICO model.
 
 ## Example: Executing a PICO
 
-The function signature for a generic PICO that celebi knows how to execute is:
+The function signature for a generic PICO that Celebi knows how to execute is:
 
 ```c
 typedef char *(*GENERIC_PICO)(char *cmdline, size_t len);
@@ -79,16 +86,16 @@ Here's an example of a very simple PICO that implements this interface:
 
 ```c
 #include <windows.h>
- 
+
 WINBASEAPI VOID WINAPI KERNEL32$OutputDebugStringA (LPCSTR lpOutputString);
- 
+
 char *go(char * arg, size_t len) {
     KERNEL32$OutputDebugStringA(arg);
     return "printed a debug string!";
 }
 ```
 
-You can compile this into a 64-bit COFF using MinGW, and link it with a very simple linker script:
+Compile it into a 64-bit COFF with MinGW and link it with Crystal Palace:
 
 ```text
 x64:
@@ -97,25 +104,8 @@ x64:
 	export
 ```
 
-Use Crystal Palace to do so:
-
 ```console
 $ piclink linker.spec x64 dbg_pico.bin
 ```
 
-Then you can use the `register` command to upload your PICO, and `execute_pico` to invoke it!
-
-
-![A screenshot demonstrating executing a PICO with Celebi](docs/execute-pico-1.png)
-
-![A screenshot demonstrating the successful execution of the PICO](docs/execute-pico-2.png)
-
-## Acknowledgements
-
-Thanks to:
-
-- [Raphael Mudge](https://tradecraftgarden.org/crystalpalace.html) for Crystal Palace and LibTCG.
-- [@pard0p](https://github.com/pard0p/LibWinHttp) for the LibWinHttp library that made implementing messaging much less of a headache.
-- [Cody Thomas](https://github.com/its-a-feature) for Mythic (and excellent documentation!)
-- [Leonardo Tamiano](https://blog.leonardotamiano.xyz/tech/base64/) for a nice self-contained base64 implementation that plays nicely with PIC.
-- [TrustedSec](https://github.com/trustedsec/CS-Situational-Awareness-BOF) for some open-source BOFs which I ported into PICOs to implement some of celebi's built-in commands.
+Then use `register` to upload the PICO and `execute_pico` to invoke it.

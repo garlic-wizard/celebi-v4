@@ -44,7 +44,7 @@ if len(sys.argv) < 3:
 bof_path = sys.argv[1]
 pico_path = sys.argv[2]
 
-cmd = ["cpl","link", "./bof2pico.spec", bof_path, pico_path, "$BOF_ARGS=00"]
+cmd = ["cpl","link", "./bof2pico.spec", bof_path, pico_path, "$BOF_ARGS=00000000"]
 
 if len(sys.argv) > 3:
     args = parse_args(sys.argv[3:])
