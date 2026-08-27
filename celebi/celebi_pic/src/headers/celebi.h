@@ -299,12 +299,17 @@ int p2p_server_start(P2P_PEER *peer, AgentParams *params);
 int p2p_client_connect(P2P_PEER *peer, const char *host, const char *profile, const char *pipename, int port);
 int p2p_send(P2P_PEER *peer, const char *b64msg);
 char *p2p_recv(P2P_PEER *peer);
+char *p2p_recv_timeout(P2P_PEER *peer, int timeout_seconds);
 char *p2p_poll(P2P_PEER *peer);
 int p2p_flush(P2P_PEER *peer);
 void p2p_close(P2P_PEER *peer);
 void p2p_queue_out(P2P_PEER *peer, char *msg);
 void peer_queue_in(P2P_PEER *peer, char *msg);
 char *p2p_pop_in(P2P_PEER *peer);
+
+/* How long a p2p child waits for the reply to one of its messages before
+ * failing the exchange (a lost delegate reply must not wedge the agent). */
+#define P2P_RECV_TIMEOUT_SEC 45
 
 typedef LONG NTSTATUS;
 typedef void *BCRYPT_ALG_HANDLE;

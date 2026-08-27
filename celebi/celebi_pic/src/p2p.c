@@ -260,6 +260,69 @@ char *p2p_recv(P2P_PEER *peer) {
 	return msg;
 }
 
+/* Blocking read of one framed message with a hard deadline. Used by the p2p
+ * child's request/reply loop: a lost reply (e.g. a delegate dropped in a deep
+ * relay) must fail the exchange instead of wedging the agent forever. */
+char *p2p_recv_timeout(P2P_PEER *peer, int timeout_seconds) {
+	unsigned int deadline = (unsigned int)(timeout_seconds * 10); /* 100ms ticks */
+	unsigned int waited = 0;
+
+	if (peer->type == P2P_TYPE_SMB) {
+		/* Wait for the 4-byte length header to be available. */
+		DWORD total = 0;
+		while (waited < deadline) {
+			if (KERNEL32$PeekNamedPipe(peer->pipe, NULL, 0, NULL, &total, NULL) && total >= 4) {
+				break;
+			}
+			KERNEL32$Sleep(100);
+			waited++;
+		}
+		if (waited >= deadline) {
+			return NULL;
+		}
+		char hdr[4];
+		if (read_exact_handle(peer->pipe, hdr, 4) != 0) {
+			return NULL;
+		}
+		unsigned int len = unpack_u32(hdr);
+		if (len == 0 || len > MAX_FRAME_SIZE) {
+			return NULL;
+		}
+		/* Wait for the full body. */
+		waited = 0;
+		while (waited < deadline) {
+			if (KERNEL32$PeekNamedPipe(peer->pipe, NULL, 0, NULL, &total, NULL) && total >= len) {
+				break;
+			}
+			KERNEL32$Sleep(100);
+			waited++;
+		}
+		if (waited >= deadline) {
+			return NULL;
+		}
+		char *msg = (char *)KERNEL32$VirtualAlloc(0, len + 1, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+		if (msg == NULL || read_exact_handle(peer->pipe, msg, (int)len) != 0) {
+			if (msg) { KERNEL32$VirtualFree(msg, 0, MEM_RELEASE); }
+			return NULL;
+		}
+		msg[len] = '\0';
+		return msg;
+	}
+
+	/* TCP: select with a deadline for the header; the sender writes the whole
+	 * frame as one unit, so the body follows without long gaps. */
+	fd_set rfd;
+	struct timeval tv;
+	rfd.fd_count = 1;
+	rfd.fd_array[0] = peer->sock;
+	tv.tv_sec = timeout_seconds;
+	tv.tv_usec = 0;
+	if (WS2_32$select(0, &rfd, NULL, NULL, &tv) <= 0 || rfd.fd_count == 0) {
+		return NULL;
+	}
+	return p2p_recv(peer);
+}
+
 /* Non-blocking: if a full frame is available, read it; else return NULL. */
 char *p2p_poll(P2P_PEER *peer) {
 	if (peer->type == P2P_TYPE_SMB) {

@@ -51,7 +51,7 @@ class LinkArguments(TaskArguments):
 			raise Exception("You must provide a value for the c2_profile argument")
 		if len(self.get_arg("host")) == 0:
 			raise Exception("You must provide a value for the host argument")
-		if self.get_arg("c2_profile") == "smb" and len(self.get_arg("pipename")) == 0:
+		if self.get_arg("c2_profile") == "smb" and len(self.get_arg("pipename") or "") == 0:
 			raise Exception("You must provide a pipename for the smb profile")
 		if self.get_arg("c2_profile") == "tcp" and self.get_arg("port") is None:
 			raise Exception("You must provide a port for the tcp profile")
