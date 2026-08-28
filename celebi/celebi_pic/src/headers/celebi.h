@@ -375,6 +375,7 @@ void agent_ps(AgentState *state, TaskInfo *task);
 void agent_cat(AgentState *state, TaskInfo *task);
 void agent_pwd(AgentState *state, TaskInfo *task);
 void agent_change(AgentState *state, TaskInfo *task);
+void agent_cd(AgentState *state, TaskInfo *task);
 
 void pack_char(char *buf, int *offset, char paydata);
 void pack_uint(char *buf, int *offset, unsigned int paydata);

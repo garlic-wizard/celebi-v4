@@ -334,7 +334,7 @@ class CelebiTranslation(TranslationContainer):
 				response["file_browser"] = self.parse_fb_blob(blob)
 			if flags & 2:
 				blob = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
-				response["process_browser"] = self.parse_ps_blob(blob)
+				response["processes"] = self.parse_ps_blob(blob)
 
 		data["responses"] = [response]
 		return data
@@ -402,7 +402,7 @@ class CelebiTranslation(TranslationContainer):
 					"session_id": to_int(f[6]) if len(f) > 6 else 0,
 					"integrity_level": to_int(f[7]) if len(f) > 7 else 0,
 					"command_line": f[8] if len(f) > 8 else "",
-					"start_time": f[9] if len(f) > 9 else "",
+					"start_time": to_int(f[9]) if len(f) > 9 else 0,
 				})
 		return {"host": "", "os": "", "processes": procs}
 		
@@ -608,6 +608,9 @@ class CelebiTranslation(TranslationContainer):
 
 		if cmd == "change":
 			return str(param_data.get("sleep", 0)) + "\t" + str(param_data.get("jitter", 0))
+
+		if cmd == "cd":
+			return param_data.get("path", "")
 
 		raise Exception("Unrecognised command parameter! Original JSON: {}".format(params))
 

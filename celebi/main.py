@@ -18,5 +18,6 @@ import celebi_agent.ps
 import celebi_agent.cat
 import celebi_agent.pwd
 import celebi_agent.change
+import celebi_agent.cd
 
 mythic_container.mythic_service.start_and_run_forever()

