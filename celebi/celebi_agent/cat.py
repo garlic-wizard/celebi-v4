@@ -37,7 +37,7 @@ class CatCommand(CommandBase):
 	attackmapping = ["T1005"]
 	supported_ui_features = []
 	attributes = CommandAttributes(
-		builtin=True,
+		builtin=False, # User-selectable at build time (supports_dynamic_loading)
 		suggested_command=True,
 	)
 

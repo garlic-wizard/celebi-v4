@@ -21,7 +21,7 @@ class WhoamiCommand(CommandBase):
 	attackmapping = ["T1033"] # "Identify the primary user, currently logged in user, set of users that commonly uses a system, or whether a user is actively using the system"
 	supported_ui_features = []
 	attributes = CommandAttributes(
-		builtin=True, # Is this command always compiled into this payload type?
+		builtin=False, # User-selectable at build time (supports_dynamic_loading)
 		suggested_command=True, # Is this command preselected when building a payload?
 	)
 

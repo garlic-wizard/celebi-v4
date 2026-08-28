@@ -39,7 +39,7 @@ class UnregisterCommand(CommandBase):
 	attackmapping = ["T1070"] # "Adversaries may delete or modify artifacts generated within systems to remove evidence of their presence"
 	supported_ui_features = []
 	attributes = CommandAttributes(
-		builtin=True, # Is this command always compiled into this payload type?
+		builtin=False, # User-selectable at build time (supports_dynamic_loading)
 		suggested_command=True, # Is this command preselected when building a payload?
 	)
 

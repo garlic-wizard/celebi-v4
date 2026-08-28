@@ -46,7 +46,7 @@ class RegisterCommand(CommandBase):
 	attackmapping = ["T1620"] # "Allocating then executing payloads directly within the memory of the process"
 	supported_ui_features = []
 	attributes = CommandAttributes(
-		builtin=True, # Is this command always compiled into this payload type?
+		builtin=False, # User-selectable at build time (supports_dynamic_loading)
 		suggested_command=True, # Is this command preselected when building a payload?
 	)
 

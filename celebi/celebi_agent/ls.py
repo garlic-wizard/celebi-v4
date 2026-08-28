@@ -46,7 +46,7 @@ class LsCommand(CommandBase):
 	attackmapping = ["T1083"]
 	supported_ui_features = ["file_browser:list"]
 	attributes = CommandAttributes(
-		builtin=True,
+		builtin=False, # User-selectable at build time (supports_dynamic_loading)
 		suggested_command=True,
 	)
 
