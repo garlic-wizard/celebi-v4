@@ -13,5 +13,10 @@ import celebi_agent.link
 import celebi_agent.unlink
 import celebi_agent.spawn
 import celebi_agent.spawnto
+import celebi_agent.ls
+import celebi_agent.ps
+import celebi_agent.cat
+import celebi_agent.pwd
+import celebi_agent.change
 
 mythic_container.mythic_service.start_and_run_forever()

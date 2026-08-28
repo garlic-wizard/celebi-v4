@@ -322,8 +322,89 @@ class CelebiTranslation(TranslationContainer):
 		# Parse the completed flag (1 = task finished, 0 = more responses coming).
 		# Default to completed if the byte is missing (legacy messages).
 		response["completed"] = bool(packed_msg[offset]) if offset < len(packed_msg) else True
+		offset += 1
+
+		# Optional structured payloads: flags byte + NUL-terminated blobs
+		# (bit 0 = file browser, bit 1 = process browser).
+		if offset < len(packed_msg):
+			flags = packed_msg[offset]
+			offset += 1
+			if flags & 1:
+				blob = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+				response["file_browser"] = self.parse_fb_blob(blob)
+			if flags & 2:
+				blob = self._read_cstr(packed_msg, offset); offset = self._after_cstr(packed_msg, offset)
+				response["process_browser"] = self.parse_ps_blob(blob)
+
 		data["responses"] = [response]
 		return data
+
+	def parse_fb_blob(self, blob):
+		# Blob format (tab/newline delimited):
+		#   line 0: parent_path \t name \t is_file \t size \t modify_ms \t access_ms \t success
+		#   lines 1+: child_name \t is_file \t size \t modify_ms \t access_ms
+		def fields(line):
+			return line.split("\t")
+		def to_int(v, default=0):
+			try:
+				return int(v)
+			except (ValueError, TypeError):
+				return default
+		lines = blob.split("\n") if blob else []
+		meta = fields(lines[0]) if lines else []
+		fb = {
+			"host": "",
+			"is_file": meta[2] == "1" if len(meta) > 2 else False,
+			"permissions": {},
+			"name": meta[1] if len(meta) > 1 else "",
+			"parent_path": meta[0] if len(meta) > 0 else "",
+			"success": (meta[6] != "0") if len(meta) > 6 else True,
+			"access_time": to_int(meta[5]) if len(meta) > 5 else 0,
+			"modify_time": to_int(meta[4]) if len(meta) > 4 else 0,
+			"size": to_int(meta[3]) if len(meta) > 3 else 0,
+			"files": [],
+		}
+		for line in lines[1:]:
+			if not line:
+				continue
+			f = fields(line)
+			fb["files"].append({
+				"is_file": f[1] == "1" if len(f) > 1 else False,
+				"permissions": {},
+				"name": f[0] if len(f) > 0 else "",
+				"access_time": to_int(f[4]) if len(f) > 4 else 0,
+				"modify_time": to_int(f[3]) if len(f) > 3 else 0,
+				"size": to_int(f[2]) if len(f) > 2 else 0,
+			})
+		return fb
+
+	def parse_ps_blob(self, blob):
+		# Blob format: one process per line:
+		#   pid \t ppid \t name \t user \t arch \t bin_path \t session \t integrity \t command_line \t start_time
+		def to_int(v, default=0):
+			try:
+				return int(v)
+			except (ValueError, TypeError):
+				return default
+		procs = []
+		if blob:
+			for line in blob.split("\n"):
+				if not line:
+					continue
+				f = line.split("\t")
+				procs.append({
+					"process_id": to_int(f[0]) if len(f) > 0 else 0,
+					"parent_process_id": to_int(f[1]) if len(f) > 1 else 0,
+					"name": f[2] if len(f) > 2 else "",
+					"user": f[3] if len(f) > 3 else "",
+					"architecture": f[4] if len(f) > 4 else "",
+					"bin_path": f[5] if len(f) > 5 else "",
+					"session_id": to_int(f[6]) if len(f) > 6 else 0,
+					"integrity_level": to_int(f[7]) if len(f) > 7 else 0,
+					"command_line": f[8] if len(f) > 8 else "",
+					"start_time": f[9] if len(f) > 9 else "",
+				})
+		return {"host": "", "os": "", "processes": procs}
 		
 	def deserialize_upload_request(self, packed_msg):
 		data = {}
@@ -512,7 +593,22 @@ class CelebiTranslation(TranslationContainer):
 			
 		if cmd == "spawnto":
 			return param_data.get("path", "")
-			
+
+		if cmd == "ls":
+			return param_data.get("path", "")
+
+		if cmd == "ps":
+			return ""
+
+		if cmd == "cat":
+			return param_data.get("path", "")
+
+		if cmd == "pwd":
+			return ""
+
+		if cmd == "change":
+			return str(param_data.get("sleep", 0)) + "\t" + str(param_data.get("jitter", 0))
+
 		raise Exception("Unrecognised command parameter! Original JSON: {}".format(params))
 
 mythic_container.mythic_service.start_and_run_forever()

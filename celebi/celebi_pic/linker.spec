@@ -33,6 +33,9 @@ x64:
 	load "bin/p2p.o"
 	merge
 	
+	load "bin/qol.o"
+	merge
+	
 	export
 	
 	# Make the shellcode.

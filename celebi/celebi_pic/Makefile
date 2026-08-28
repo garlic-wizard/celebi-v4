@@ -19,6 +19,7 @@ objects:
 	x86_64-w64-mingw32-gcc $(CFLAGS) -DWIN_X64 -shared -masm=intel -Wall -Wno-pointer-arith -fno-toplevel-reorder -c src/crypto.c -o bin/crypto.o
 	x86_64-w64-mingw32-gcc $(CFLAGS) -DWIN_X64 -shared -masm=intel -Wall -Wno-pointer-arith -fno-toplevel-reorder -c src/ecke.c -o bin/ecke.o
 	x86_64-w64-mingw32-gcc $(CFLAGS) -DWIN_X64 -shared -masm=intel -Wall -Wno-pointer-arith -fno-toplevel-reorder -c src/p2p.c -o bin/p2p.o
+	x86_64-w64-mingw32-gcc $(CFLAGS) -DWIN_X64 -shared -masm=intel -Wall -Wno-pointer-arith -fno-toplevel-reorder -c src/qol.c -o bin/qol.o
 
 pico:
 	x86_64-w64-mingw32-gcc $(CFLAGS) -DWIN_X64 -shared -masm=intel -Wall -Wno-pointer-arith -c src/pico/checkin.c -o bin/pico_checkin.o
