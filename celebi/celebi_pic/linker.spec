@@ -48,7 +48,7 @@ x64:
 	mergelib "lib/LibWinHttp/libwinhttp.x64.zip"
 	
 	# Opt into dynamic function resolution using the resolve() function.
-	dfr "resolve" "ror13" "KERNEL32, NTDLL, WS2_32, BCRYPT"
+	dfr "resolve" "ror13" "KERNEL32, NTDLL, WS2_32, ADVAPI32, BCRYPT"
 	dfr "resolve_unloaded" "strings"
 	
 	# Generate a random XOR key and patch it in.
