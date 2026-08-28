@@ -3,6 +3,7 @@ from mythic_container.MythicCommandBase import *
 from mythic_container.MythicRPC import *
 
 import base64
+import os
 import subprocess
 from urllib.parse import urlsplit
 
@@ -182,11 +183,15 @@ class CelebiAgent(PayloadType):
 				if cmd not in selected:
 					cflags.append("-DCELEBI_NO_{}".format(cmd.upper()))
 
+		# Pass CFLAGS through the environment: a single argv element like
+		# CFLAGS="-DA -DB" makes make treat it as one -D argument and swallow
+		# every define after the first, silently compiling excluded commands
+		# back in. The environment avoids any shell quoting ambiguity.
+		env = dict(os.environ)
 		if len(cflags) > 0:
-			cflags_str = "CFLAGS=\"{}\"".format(" ".join(cflags))
-			proc = subprocess.Popen(["make", "pic", cflags_str], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/Mythic/celebi_pic/")
-		else:
-			proc = subprocess.Popen(["make", "pic"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/Mythic/celebi_pic/")
+			env["CFLAGS"] = " ".join(cflags)
+
+		proc = subprocess.Popen(["make", "pic"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd="/Mythic/celebi_pic/")
 		proc.wait()
 		
 # 0.0.x = initial PoC, non-functional
